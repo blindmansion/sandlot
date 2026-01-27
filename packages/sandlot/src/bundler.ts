@@ -3,29 +3,55 @@ import type * as EsbuildTypes from "esbuild-wasm";
 import { getPackageManifest, resolveToEsmUrl } from "./packages";
 import { getSharedModuleRuntimeCode, getSharedModuleExports } from "./shared-modules";
 
-// Lazily loaded esbuild module - loaded from CDN to avoid bundler issues
+// Lazily loaded esbuild module
 let esbuild: typeof EsbuildTypes | null = null;
+
+/**
+ * Detect if we're running in a server environment (Node.js, Bun, Deno)
+ * vs a browser environment.
+ */
+function isServerEnvironment(): boolean {
+  // Check for Bun
+  if (typeof globalThis !== "undefined" && "Bun" in globalThis) {
+    return true;
+  }
+  // Check for Deno
+  if (typeof globalThis !== "undefined" && "Deno" in globalThis) {
+    return true;
+  }
+  // Check for Node.js (process.versions.node exists)
+  if (typeof process !== "undefined" && process.versions?.node) {
+    return true;
+  }
+  return false;
+}
 
 async function getEsbuild(): Promise<typeof EsbuildTypes> {
   if (esbuild) return esbuild;
 
-  // Load esbuild-wasm from esm.sh CDN to avoid bundler transformation issues
-  // esm.sh provides proper ESM wrappers for npm packages
-  const cdnUrl = `https://esm.sh/esbuild-wasm@${ESBUILD_VERSION}`;
+  if (isServerEnvironment()) {
+    // In server environments, use native esbuild for better performance
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const mod: any = await import("esbuild");
+    esbuild = mod.default ?? mod;
+  } else {
+    // In browser, load esbuild-wasm from esm.sh CDN
+    const cdnUrl = `https://esm.sh/esbuild-wasm@${ESBUILD_VERSION}`;
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const mod: any = await import(/* @vite-ignore */ cdnUrl);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const mod: any = await import(/* @vite-ignore */ cdnUrl);
 
-  // esm.sh typically provides both default and named exports
-  esbuild = mod.default ?? mod;
+    // esm.sh typically provides both default and named exports
+    esbuild = mod.default ?? mod;
 
-  // Verify we have the initialize function
-  if (typeof esbuild?.initialize !== 'function') {
-    console.error('esbuild-wasm module structure:', mod);
-    throw new Error('Failed to load esbuild-wasm: initialize function not found');
+    // Verify we have the initialize function (only needed for wasm version)
+    if (typeof esbuild?.initialize !== "function") {
+      console.error("esbuild-wasm module structure:", mod);
+      throw new Error("Failed to load esbuild-wasm: initialize function not found");
+    }
   }
 
-  return esbuild;
+  return esbuild!;
 }
 
 /**
@@ -166,8 +192,12 @@ function checkCrossOriginIsolation(): void {
 }
 
 /**
- * Initialize esbuild-wasm. Called automatically on first bundle.
+ * Initialize esbuild. Called automatically on first bundle.
  * Can be called explicitly to pre-warm.
+ * 
+ * In browser environments, this loads and initializes esbuild-wasm.
+ * In server environments (Node.js, Bun, Deno), this loads native esbuild
+ * which doesn't require WASM initialization.
  */
 export async function initBundler(): Promise<void> {
   if (initialized) return;
@@ -177,13 +207,16 @@ export async function initBundler(): Promise<void> {
     return;
   }
 
-  checkCrossOriginIsolation();
-
   initPromise = (async () => {
     const es = await getEsbuild();
-    await es.initialize({
-      wasmURL: getWasmUrl(),
-    });
+
+    // Native esbuild doesn't need initialization, only esbuild-wasm does
+    if (!isServerEnvironment() && typeof es.initialize === "function") {
+      checkCrossOriginIsolation();
+      await es.initialize({
+        wasmURL: getWasmUrl(),
+      });
+    }
   })();
 
   await initPromise;

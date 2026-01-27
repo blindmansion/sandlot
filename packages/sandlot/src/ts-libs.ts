@@ -2,8 +2,8 @@
  * TypeScript standard library fetcher and cache.
  *
  * Fetches TypeScript's lib.*.d.ts files from jsDelivr CDN and caches
- * them in IndexedDB for reuse. These files provide types for built-in
- * JavaScript APIs (Array, Number, String) and browser APIs (console, window, document).
+ * them in memory. These files provide types for built-in JavaScript APIs
+ * (Array, Number, String) and browser APIs (console, window, document).
  */
 
 /**
@@ -16,13 +16,6 @@ const TS_VERSION = "5.9.3";
  * CDN base URL for TypeScript lib files
  */
 const CDN_BASE = `https://cdn.jsdelivr.net/npm/typescript@${TS_VERSION}/lib`;
-
-/**
- * IndexedDB database name for lib cache
- */
-const DB_NAME = "ts-lib-cache";
-const DB_VERSION = 1;
-const STORE_NAME = "libs";
 
 /**
  * Default libs for browser environment with ES2020 target.
@@ -145,74 +138,21 @@ export async function fetchAllLibs(libs: string[]): Promise<Map<string, string>>
 }
 
 /**
- * Open the IndexedDB database for lib caching.
+ * In-memory cache for TypeScript lib files.
+ * Shared across all LibCache instances.
  */
-async function openDatabase(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-
-    request.onerror = () => reject(request.error);
-    request.onsuccess = () => resolve(request.result);
-
-    request.onupgradeneeded = (event) => {
-      const db = (event.target as IDBOpenDBRequest).result;
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        db.createObjectStore(STORE_NAME);
-      }
-    };
-  });
-}
+let memoryCache: Map<string, string> | null = null;
 
 /**
- * Promisify an IDBRequest
- */
-function promisifyRequest<T>(request: IDBRequest<T>): Promise<T> {
-  return new Promise((resolve, reject) => {
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-}
-
-/**
- * Cache key for the current TypeScript version
- */
-function getCacheKey(): string {
-  return `libs-${TS_VERSION}`;
-}
-
-/**
- * Serializable format for storing libs in IndexedDB
- */
-interface CachedLibs {
-  version: string;
-  timestamp: number;
-  libs: Record<string, string>;
-}
-
-/**
- * LibCache provides IndexedDB-backed caching for TypeScript lib files.
+ * LibCache provides in-memory caching for TypeScript lib files.
  *
  * Usage:
  * ```ts
- * const cache = await LibCache.create();
+ * const cache = new LibCache();
  * const libs = await cache.getOrFetch(getDefaultBrowserLibs());
  * ```
  */
 export class LibCache {
-  private db: IDBDatabase;
-
-  private constructor(db: IDBDatabase) {
-    this.db = db;
-  }
-
-  /**
-   * Create and initialize a LibCache instance.
-   */
-  static async create(): Promise<LibCache> {
-    const db = await openDatabase();
-    return new LibCache(db);
-  }
-
   /**
    * Get cached libs if available, otherwise fetch from CDN and cache.
    *
@@ -221,12 +161,11 @@ export class LibCache {
    */
   async getOrFetch(libs: string[]): Promise<Map<string, string>> {
     // Try to get from cache first
-    const cached = await this.get();
-    if (cached) {
+    if (memoryCache) {
       // Verify all requested libs are in cache
-      const missing = libs.filter((lib) => !cached.has(lib));
+      const missing = libs.filter((lib) => !memoryCache!.has(lib));
       if (missing.length === 0) {
-        return cached;
+        return memoryCache;
       }
       // Some libs missing, fetch all and update cache
       console.log(`Cache missing libs: ${missing.join(", ")}, fetching all...`);
@@ -238,7 +177,7 @@ export class LibCache {
     console.log(`Fetched ${fetched.size} lib files`);
 
     // Cache the results
-    await this.set(fetched);
+    memoryCache = fetched;
 
     return fetched;
   }
@@ -246,64 +185,27 @@ export class LibCache {
   /**
    * Get cached libs if available.
    */
-  async get(): Promise<Map<string, string> | null> {
-    const tx = this.db.transaction(STORE_NAME, "readonly");
-    const store = tx.objectStore(STORE_NAME);
-    const key = getCacheKey();
-
-    const cached = await promisifyRequest<CachedLibs | undefined>(store.get(key));
-    if (!cached) {
-      return null;
-    }
-
-    // Verify version matches
-    if (cached.version !== TS_VERSION) {
-      console.log(`Cache version mismatch: ${cached.version} vs ${TS_VERSION}`);
-      return null;
-    }
-
-    return new Map(Object.entries(cached.libs));
+  get(): Map<string, string> | null {
+    return memoryCache;
   }
 
   /**
    * Store libs in the cache.
    */
-  async set(libs: Map<string, string>): Promise<void> {
-    const tx = this.db.transaction(STORE_NAME, "readwrite");
-    const store = tx.objectStore(STORE_NAME);
-    const key = getCacheKey();
-
-    const cached: CachedLibs = {
-      version: TS_VERSION,
-      timestamp: Date.now(),
-      libs: Object.fromEntries(libs),
-    };
-
-    await promisifyRequest(store.put(cached, key));
+  set(libs: Map<string, string>): void {
+    memoryCache = libs;
   }
 
   /**
    * Clear all cached libs.
    */
-  async clear(): Promise<void> {
-    const tx = this.db.transaction(STORE_NAME, "readwrite");
-    const store = tx.objectStore(STORE_NAME);
-    await promisifyRequest(store.clear());
-  }
-
-  /**
-   * Close the database connection.
-   */
-  close(): void {
-    this.db.close();
+  clear(): void {
+    memoryCache = null;
   }
 }
 
 /**
  * Convenience function to fetch and cache libs in one call.
- * Creates a temporary LibCache, fetches libs, and returns the result.
- *
- * For repeated use, prefer creating a LibCache instance directly.
  *
  * @param libs - Lib names to fetch (defaults to getDefaultBrowserLibs())
  * @returns Map of lib name to content
@@ -311,10 +213,6 @@ export class LibCache {
 export async function fetchAndCacheLibs(
   libs: string[] = getDefaultBrowserLibs()
 ): Promise<Map<string, string>> {
-  const cache = await LibCache.create();
-  try {
-    return await cache.getOrFetch(libs);
-  } finally {
-    cache.close();
-  }
+  const cache = new LibCache();
+  return cache.getOrFetch(libs);
 }
