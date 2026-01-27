@@ -54,19 +54,40 @@ export interface BundleOptions {
   target?: string[];
 }
 
-export interface BundleResult {
+/**
+ * Bundle result - success or failure with structured errors.
+ */
+export type BundleResult = BundleSuccess | BundleFailure;
+
+export interface BundleSuccess {
+  success: true;
   code: string;
   warnings: BundleWarning[];
   includedFiles: string[];
 }
 
+export interface BundleFailure {
+  success: false;
+  errors: BundleError[];
+  warnings: BundleWarning[];
+}
+
 export interface BundleWarning {
   text: string;
-  location?: {
-    file: string;
-    line: number;
-    column?: number;
-  };
+  location?: BundleLocation;
+}
+
+export interface BundleError {
+  text: string;
+  location?: BundleLocation;
+}
+
+export interface BundleLocation {
+  file: string;
+  line: number;
+  column?: number;
+  /** The source line text (if available from esbuild) */
+  lineText?: string;
 }
 
 // =============================================================================
@@ -237,10 +258,39 @@ export interface SandboxOptions {
   onBuild?: (result: BuildOutput) => void | Promise<void>;
 }
 
-export interface BuildOutput {
-  bundle: BundleResult;
+/**
+ * Build result - success or failure with structured errors.
+ *
+ * On success, contains the bundle and loaded module.
+ * On failure, contains the phase that failed and structured error information.
+ */
+export type BuildResult = BuildSuccess | BuildFailure;
+
+export interface BuildSuccess {
+  success: true;
+  bundle: BundleSuccess;
   module: Record<string, unknown>;
 }
+
+export interface BuildFailure {
+  success: false;
+  /** Which phase of the build failed */
+  phase: "entry" | "typecheck" | "bundle" | "load" | "validation";
+  /** Error message (for entry/load/validation failures) */
+  message?: string;
+  /** Type check diagnostics (for typecheck failures) */
+  diagnostics?: Diagnostic[];
+  /** Bundle errors (for bundle failures) */
+  bundleErrors?: BundleError[];
+  /** Bundle warnings (may be present even on failure) */
+  bundleWarnings?: BundleWarning[];
+}
+
+/**
+ * Legacy alias for BuildSuccess.
+ * @deprecated Use BuildResult and check success flag instead.
+ */
+export type BuildOutput = BuildSuccess;
 
 // -----------------------------------------------------------------------------
 // Install/Uninstall Types
@@ -406,10 +456,9 @@ export interface Sandbox {
    * loads the module, runs validation, and fires onBuild callbacks.
    *
    * @param options - Build options
-   * @returns Build output with bundle and loaded module
-   * @throws If build fails (typecheck errors, bundle errors, validation errors, load errors)
+   * @returns Build result - check `success` field to determine outcome
    */
-  build(options?: SandboxBuildOptions): Promise<BuildOutput>;
+  build(options?: SandboxBuildOptions): Promise<BuildResult>;
 
   /**
    * Type check the project.

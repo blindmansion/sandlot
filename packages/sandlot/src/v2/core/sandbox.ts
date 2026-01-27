@@ -11,6 +11,7 @@
  * shell commands via exec() for flexibility.
  */
 
+import { Bash } from "just-bash/browser";
 import type {
   IBundler,
   ITypechecker,
@@ -21,14 +22,15 @@ import type {
   SandboxState,
   SandboxBuildOptions,
   SandboxTypecheckOptions,
-  BuildOutput,
+  BuildResult,
+  BuildSuccess,
   InstallResult,
   UninstallResult,
   TypecheckResult,
   ExecResult,
-  BundleResult,
 } from "../types";
-import { Filesystem } from "./fs";
+import { Filesystem, wrapFilesystemForJustBash } from "./fs";
+import { createDefaultCommands, type SandboxRef } from "../commands";
 
 // =============================================================================
 // Default Configuration
@@ -186,7 +188,7 @@ function ensureDir(fs: Filesystem, path: string): void {
  * Load a bundled module by creating a blob URL and importing it
  */
 async function loadModule(
-  bundleResult: BundleResult
+  bundleResult: { code: string }
 ): Promise<Record<string, unknown>> {
   const blob = new Blob([bundleResult.code], { type: "application/javascript" });
   const url = URL.createObjectURL(blob);
@@ -234,9 +236,9 @@ export async function createSandboxImpl(
   // Internal State
   // ---------------------------------------------------------------------------
 
-  let lastBuild: BuildOutput | null = null;
+  let lastBuild: BuildSuccess | null = null;
   const onBuildCallbacks = new Set<
-    (result: BuildOutput) => void | Promise<void>
+    (result: BuildSuccess) => void | Promise<void>
   >();
   let validationFn: ((module: Record<string, unknown>) => unknown) | null = null;
 
@@ -362,19 +364,23 @@ export async function createSandboxImpl(
   /**
    * Build the project
    */
-  async function build(buildOptions?: SandboxBuildOptions): Promise<BuildOutput> {
+  async function build(buildOptions?: SandboxBuildOptions): Promise<BuildResult> {
     // Get entry point: explicit option > package.json main > default
     const buildEntryPoint = buildOptions?.entryPoint ?? getEntryPoint(fs);
     const skipTypecheck = buildOptions?.skipTypecheck ?? false;
     const minify = buildOptions?.minify ?? false;
     const format = buildOptions?.format ?? "esm";
 
-    // Verify entry point exists
+    // Step 1: Verify entry point exists
     if (!fs.exists(buildEntryPoint)) {
-      throw new Error(`Entry point not found: ${buildEntryPoint}`);
+      return {
+        success: false,
+        phase: "entry",
+        message: `Entry point not found: ${buildEntryPoint}`,
+      };
     }
 
-    // Step 1: Type check (unless skipped or no typechecker)
+    // Step 2: Type check (unless skipped or no typechecker)
     if (!skipTypecheck && typechecker) {
       const typecheckResult = await typechecker.typecheck({
         fs,
@@ -383,22 +389,18 @@ export async function createSandboxImpl(
       });
 
       if (!typecheckResult.success) {
-        const errors = typecheckResult.diagnostics
-          .filter((d) => d.severity === "error")
-          .map((d) => {
-            const loc = d.file ? `${d.file}:${d.line ?? 1}:${d.column ?? 1}` : "";
-            return loc ? `${loc}: ${d.message}` : d.message;
-          })
-          .join("\n");
-
-        throw new Error(`Type check failed:\n${errors}`);
+        return {
+          success: false,
+          phase: "typecheck",
+          diagnostics: typecheckResult.diagnostics,
+        };
       }
     }
 
-    // Step 2: Read installed packages
+    // Step 3: Read installed packages
     const installedPackages = getInstalledPackages(fs);
 
-    // Step 3: Bundle
+    // Step 4: Bundle
     const bundleResult = await bundler.bundle({
       fs,
       entryPoint: buildEntryPoint,
@@ -409,17 +411,29 @@ export async function createSandboxImpl(
       minify,
     });
 
-    // Step 4: Load module
+    // Check for bundle errors
+    if (!bundleResult.success) {
+      return {
+        success: false,
+        phase: "bundle",
+        bundleErrors: bundleResult.errors,
+        bundleWarnings: bundleResult.warnings,
+      };
+    }
+
+    // Step 5: Load module
     let loadedModule: Record<string, unknown>;
     try {
       loadedModule = await loadModule(bundleResult);
     } catch (err) {
-      throw new Error(
-        `Failed to load module: ${err instanceof Error ? err.message : String(err)}`
-      );
+      return {
+        success: false,
+        phase: "load",
+        message: `Failed to load module: ${err instanceof Error ? err.message : String(err)}`,
+      };
     }
 
-    // Step 5: Validate (if validation function is set)
+    // Step 6: Validate (if validation function is set)
     let validatedModule = loadedModule;
     if (validationFn) {
       try {
@@ -429,19 +443,22 @@ export async function createSandboxImpl(
             ? (result as Record<string, unknown>)
             : loadedModule;
       } catch (err) {
-        throw new Error(
-          `Validation failed: ${err instanceof Error ? err.message : String(err)}`
-        );
+        return {
+          success: false,
+          phase: "validation",
+          message: `Validation failed: ${err instanceof Error ? err.message : String(err)}`,
+        };
       }
     }
 
-    // Step 6: Create build output
-    const output: BuildOutput = {
+    // Step 7: Create build output
+    const output: BuildSuccess = {
+      success: true,
       bundle: bundleResult,
       module: validatedModule,
     };
 
-    // Step 7: Update lastBuild and fire callbacks
+    // Step 8: Update lastBuild and fire callbacks
     lastBuild = output;
     for (const callback of onBuildCallbacks) {
       try {
@@ -488,16 +505,51 @@ export async function createSandboxImpl(
     });
   }
 
+  // ---------------------------------------------------------------------------
+  // Shell Environment (lazy initialization)
+  // ---------------------------------------------------------------------------
+
+  // Create a SandboxRef for commands to use
+  const sandboxRef: SandboxRef = {
+    fs,
+    install,
+    uninstall,
+    build,
+    typecheck,
+  };
+
+  // Lazily initialized Bash instance
+  let bashInstance: Bash | null = null;
+
+  function getBash(): Bash {
+    if (!bashInstance) {
+      const commands = createDefaultCommands(sandboxRef);
+      bashInstance = new Bash({
+        cwd: "/",
+        fs: wrapFilesystemForJustBash(fs),
+        customCommands: commands,
+      });
+    }
+    return bashInstance;
+  }
+
   /**
-   * Execute a shell command (placeholder - will be implemented with just-bash)
+   * Execute a shell command using just-bash.
+   *
+   * Supports standard bash commands (echo, cat, cd, etc.) plus:
+   *   - sandlot build [options]
+   *   - sandlot typecheck [options]
+   *   - sandlot install <pkg> [...]
+   *   - sandlot uninstall <pkg> [...]
+   *   - sandlot help
    */
-  async function exec(_command: string): Promise<ExecResult> {
-    // TODO: Implement with just-bash custom commands
-    // For now, return a placeholder
+  async function exec(command: string): Promise<ExecResult> {
+    const bash = getBash();
+    const result = await bash.exec(command);
     return {
-      exitCode: 1,
-      stdout: "",
-      stderr: "exec() not yet implemented - use direct methods instead",
+      exitCode: result.exitCode,
+      stdout: result.stdout,
+      stderr: result.stderr,
     };
   }
 
@@ -539,7 +591,7 @@ export async function createSandboxImpl(
     build,
     typecheck,
 
-    // File operations (sync, exposed as sync)
+    // File operations
     readFile(path: string): string {
       const normalizedPath = path.startsWith("/") ? path : `/${path}`;
       return fs.readFile(normalizedPath);

@@ -4,7 +4,11 @@ import type {
   ISharedModuleRegistry,
   BundleOptions,
   BundleResult,
+  BundleSuccess,
+  BundleFailure,
   BundleWarning,
+  BundleError,
+  BundleLocation,
   Filesystem,
 } from "../types";
 
@@ -136,7 +140,12 @@ export class EsbuildWasmBundler implements IBundler {
     await this.initialize();
 
     if (!this.esbuild) {
-      throw new Error("esbuild not initialized");
+      // Return a failure result instead of throwing
+      return {
+        success: false,
+        errors: [{ text: "esbuild not initialized" }],
+        warnings: [],
+      };
     }
 
     const {
@@ -159,7 +168,11 @@ export class EsbuildWasmBundler implements IBundler {
 
     // Verify entry point exists
     if (!fs.exists(normalizedEntry)) {
-      throw new Error(`Entry point not found: ${normalizedEntry}`);
+      return {
+        success: false,
+        errors: [{ text: `Entry point not found: ${normalizedEntry}` }],
+        warnings: [],
+      };
     }
 
     // Track files included in the bundle
@@ -176,40 +189,100 @@ export class EsbuildWasmBundler implements IBundler {
       includedFiles,
     });
 
-    // Run esbuild
-    const result = await this.esbuild.build({
-      entryPoints: [normalizedEntry],
-      bundle: true,
-      write: false,
-      format,
-      minify,
-      sourcemap: sourcemap ? "inline" : false,
-      target,
-      external,
-      plugins: [plugin],
-      jsx: "automatic",
-    });
+    try {
+      // Run esbuild
+      const result = await this.esbuild.build({
+        entryPoints: [normalizedEntry],
+        bundle: true,
+        write: false,
+        format,
+        minify,
+        sourcemap: sourcemap ? "inline" : false,
+        target,
+        external,
+        plugins: [plugin],
+        jsx: "automatic",
+      });
 
-    const code = result.outputFiles?.[0]?.text ?? "";
+      const code = result.outputFiles?.[0]?.text ?? "";
 
-    // Convert esbuild warnings to our format
-    const warnings: BundleWarning[] = result.warnings.map((w) => ({
-      text: w.text,
-      location: w.location
-        ? {
-            file: w.location.file,
-            line: w.location.line,
-            column: w.location.column,
-          }
-        : undefined,
-    }));
+      // Convert esbuild warnings to our format
+      const warnings: BundleWarning[] = result.warnings.map((w) =>
+        convertEsbuildMessage(w)
+      );
 
-    return {
-      code,
-      warnings,
-      includedFiles: Array.from(includedFiles),
+      return {
+        success: true,
+        code,
+        warnings,
+        includedFiles: Array.from(includedFiles),
+      };
+    } catch (err) {
+      // esbuild throws BuildFailure with .errors array
+      if (isEsbuildBuildFailure(err)) {
+        const errors: BundleError[] = err.errors.map((e) =>
+          convertEsbuildMessage(e)
+        );
+        const warnings: BundleWarning[] = err.warnings.map((w) =>
+          convertEsbuildMessage(w)
+        );
+        return {
+          success: false,
+          errors,
+          warnings,
+        };
+      }
+
+      // Unknown error - wrap it
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        success: false,
+        errors: [{ text: message }],
+        warnings: [],
+      };
+    }
+  }
+}
+
+// =============================================================================
+// Error Handling Helpers
+// =============================================================================
+
+/**
+ * Type guard for esbuild BuildFailure
+ */
+function isEsbuildBuildFailure(
+  err: unknown
+): err is { errors: EsbuildTypes.Message[]; warnings: EsbuildTypes.Message[] } {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "errors" in err &&
+    Array.isArray((err as { errors: unknown }).errors)
+  );
+}
+
+/**
+ * Convert esbuild Message to our BundleError/BundleWarning format
+ */
+function convertEsbuildMessage(
+  msg: EsbuildTypes.Message
+): BundleError | BundleWarning {
+  let location: BundleLocation | undefined;
+
+  if (msg.location) {
+    location = {
+      file: msg.location.file,
+      line: msg.location.line,
+      column: msg.location.column,
+      lineText: msg.location.lineText,
     };
   }
+
+  return {
+    text: msg.text,
+    location,
+  };
 }
 
 // =============================================================================

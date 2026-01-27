@@ -38,6 +38,19 @@ export {
 } from "./core/shared-module-registry";
 
 // -----------------------------------------------------------------------------
+// Commands (for extending the shell with custom commands)
+// -----------------------------------------------------------------------------
+
+export {
+  createSandlotCommand,
+  createDefaultCommands,
+  formatSize,
+  formatDiagnostics,
+  formatBundleErrors,
+} from "./commands";
+export type { SandboxRef } from "./commands";
+
+// -----------------------------------------------------------------------------
 // Types Resolver (platform-independent, works anywhere with fetch)
 // -----------------------------------------------------------------------------
 
@@ -70,7 +83,10 @@ export type {
   SandboxState,
 
   // Build types
-  BuildOutput,
+  BuildResult,
+  BuildSuccess,
+  BuildFailure,
+  BuildOutput, // Legacy alias for BuildSuccess
   SandboxBuildOptions,
 
   // Install/Uninstall types
@@ -83,7 +99,11 @@ export type {
   // Bundler types
   BundleOptions,
   BundleResult,
+  BundleSuccess,
+  BundleFailure,
   BundleWarning,
+  BundleError,
+  BundleLocation,
 
   // Typechecker types
   TypecheckOptions,
