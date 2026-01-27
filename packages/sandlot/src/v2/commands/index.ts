@@ -68,7 +68,7 @@ function showHelp() {
 Usage: sandlot <command> [options]
 
 Commands:
-  build       Build the project (typecheck, bundle, load)
+  build       Build the project (typecheck, bundle)
   typecheck   Type check without building (alias: tsc)
   install     Install packages (aliases: add, i)
   uninstall   Remove packages (aliases: remove, rm)
@@ -169,14 +169,6 @@ Examples:
         }
         break;
 
-      case "load":
-        stderr = `Build failed: ${result.message}\n`;
-        break;
-
-      case "validation":
-        stderr = `Build failed: ${result.message}\n`;
-        break;
-
       default:
         stderr = `Build failed: Unknown error\n`;
     }
@@ -190,19 +182,12 @@ Examples:
 
   // Build succeeded
   let output = `Build successful!\n`;
-  output += `Size: ${formatSize(result.bundle.code.length)}\n`;
-  output += `Files: ${result.bundle.includedFiles.length}\n`;
+  output += `Size: ${formatSize(result.code.length)}\n`;
+  output += `Files: ${result.includedFiles.length}\n`;
 
-  const exportNames = Object.keys(result.module).filter(
-    (k) => !k.startsWith("__")
-  );
-  if (exportNames.length > 0) {
-    output += `Exports: ${exportNames.join(", ")}\n`;
-  }
-
-  if (result.bundle.warnings.length > 0) {
+  if (result.warnings.length > 0) {
     output += `\nWarnings:\n`;
-    for (const warning of result.bundle.warnings) {
+    for (const warning of result.warnings) {
       if (warning.location) {
         output += `  ${warning.location.file}:${warning.location.line}: ${warning.text}\n`;
       } else {

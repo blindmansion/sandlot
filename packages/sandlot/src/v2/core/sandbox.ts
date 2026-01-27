@@ -5,10 +5,13 @@
  * - Virtual filesystem (sync)
  * - Installed packages (tracked in /package.json)
  * - Build configuration (entry point, tsconfig)
- * - Validation function
  *
  * The sandbox exposes both direct methods (install, build, etc.) and
  * shell commands via exec() for flexibility.
+ *
+ * Build produces a code string but does NOT load or execute it.
+ * Execution is handled by an external executor (main thread, worker, iframe, etc.)
+ * which provides appropriate isolation and security boundaries.
  */
 
 import { Bash } from "just-bash/browser";
@@ -181,27 +184,6 @@ function ensureDir(fs: Filesystem, path: string): void {
 }
 
 // =============================================================================
-// Module Loader
-// =============================================================================
-
-/**
- * Load a bundled module by creating a blob URL and importing it
- */
-async function loadModule(
-  bundleResult: { code: string }
-): Promise<Record<string, unknown>> {
-  const blob = new Blob([bundleResult.code], { type: "application/javascript" });
-  const url = URL.createObjectURL(blob);
-  try {
-    // @vite-ignore prevents Vite from analyzing this dynamic import
-    const module = await import(/* @vite-ignore */ url);
-    return module as Record<string, unknown>;
-  } finally {
-    URL.revokeObjectURL(url);
-  }
-}
-
-// =============================================================================
 // Sandbox Context (dependencies from Sandlot)
 // =============================================================================
 
@@ -240,7 +222,6 @@ export async function createSandboxImpl(
   const onBuildCallbacks = new Set<
     (result: BuildSuccess) => void | Promise<void>
   >();
-  let validationFn: ((module: Record<string, unknown>) => unknown) | null = null;
 
   // Register initial onBuild callback if provided
   if (options.onBuild) {
@@ -421,44 +402,15 @@ export async function createSandboxImpl(
       };
     }
 
-    // Step 5: Load module
-    let loadedModule: Record<string, unknown>;
-    try {
-      loadedModule = await loadModule(bundleResult);
-    } catch (err) {
-      return {
-        success: false,
-        phase: "load",
-        message: `Failed to load module: ${err instanceof Error ? err.message : String(err)}`,
-      };
-    }
-
-    // Step 6: Validate (if validation function is set)
-    let validatedModule = loadedModule;
-    if (validationFn) {
-      try {
-        const result = validationFn(loadedModule);
-        validatedModule =
-          result && typeof result === "object"
-            ? (result as Record<string, unknown>)
-            : loadedModule;
-      } catch (err) {
-        return {
-          success: false,
-          phase: "validation",
-          message: `Validation failed: ${err instanceof Error ? err.message : String(err)}`,
-        };
-      }
-    }
-
-    // Step 7: Create build output
+    // Step 5: Create build output (no loading/execution - that's the executor's job)
     const output: BuildSuccess = {
       success: true,
-      bundle: bundleResult,
-      module: validatedModule,
+      code: bundleResult.code,
+      includedFiles: bundleResult.includedFiles,
+      warnings: bundleResult.warnings,
     };
 
-    // Step 8: Update lastBuild and fire callbacks
+    // Step 6: Update lastBuild and fire callbacks
     lastBuild = output;
     for (const callback of onBuildCallbacks) {
       try {
@@ -577,33 +529,14 @@ export async function createSandboxImpl(
       };
     },
 
-    setValidation(fn) {
-      validationFn = fn;
-    },
-
-    clearValidation() {
-      validationFn = null;
-    },
-
     // Direct methods
     install,
     uninstall,
     build,
     typecheck,
 
-    // File operations
-    readFile(path: string): string {
-      const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-      return fs.readFile(normalizedPath);
-    },
-
-    writeFile(path: string, content: string): void {
-      const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-      const dir = normalizedPath.substring(0, normalizedPath.lastIndexOf("/"));
-      if (dir && dir !== "/") {
-        ensureDir(fs, dir);
-      }
-      fs.writeFile(normalizedPath, content);
-    },
+    // File operations (fs handles path normalization and parent dir creation)
+    readFile: (path: string) => fs.readFile(path),
+    writeFile: (path: string, content: string) => fs.writeFile(path, content),
   };
 }

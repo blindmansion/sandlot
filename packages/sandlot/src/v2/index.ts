@@ -86,7 +86,6 @@ export type {
   BuildResult,
   BuildSuccess,
   BuildFailure,
-  BuildOutput, // Legacy alias for BuildSuccess
   SandboxBuildOptions,
 
   // Install/Uninstall types

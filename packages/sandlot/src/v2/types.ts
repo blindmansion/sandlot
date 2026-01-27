@@ -255,28 +255,36 @@ export interface SandboxOptions {
   /**
    * Callback invoked when a build succeeds
    */
-  onBuild?: (result: BuildOutput) => void | Promise<void>;
+  onBuild?: (result: BuildSuccess) => void | Promise<void>;
 }
 
 /**
  * Build result - success or failure with structured errors.
  *
- * On success, contains the bundle and loaded module.
+ * On success, contains the bundled code string.
  * On failure, contains the phase that failed and structured error information.
+ *
+ * Note: Build does NOT load or execute the module. Use an executor to run the code.
+ * This keeps the build phase pure (no code execution) and allows different execution
+ * contexts (main thread, web worker, iframe, remote server).
  */
 export type BuildResult = BuildSuccess | BuildFailure;
 
 export interface BuildSuccess {
   success: true;
-  bundle: BundleSuccess;
-  module: Record<string, unknown>;
+  /** The bundled JavaScript code */
+  code: string;
+  /** Files that were included in the bundle */
+  includedFiles: string[];
+  /** Any warnings from the bundler */
+  warnings: BundleWarning[];
 }
 
 export interface BuildFailure {
   success: false;
   /** Which phase of the build failed */
-  phase: "entry" | "typecheck" | "bundle" | "load" | "validation";
-  /** Error message (for entry/load/validation failures) */
+  phase: "entry" | "typecheck" | "bundle";
+  /** Error message (for entry failures) */
   message?: string;
   /** Type check diagnostics (for typecheck failures) */
   diagnostics?: Diagnostic[];
@@ -286,11 +294,6 @@ export interface BuildFailure {
   bundleWarnings?: BundleWarning[];
 }
 
-/**
- * Legacy alias for BuildSuccess.
- * @deprecated Use BuildResult and check success flag instead.
- */
-export type BuildOutput = BuildSuccess;
 
 // -----------------------------------------------------------------------------
 // Install/Uninstall Types
@@ -378,9 +381,9 @@ export interface Sandbox {
   exec(command: string): Promise<ExecResult>;
 
   /**
-   * The last successful build output
+   * The last successful build result (code string + metadata)
    */
-  readonly lastBuild: BuildOutput | null;
+  readonly lastBuild: BuildSuccess | null;
 
   /**
    * Get the current sandbox state for persistence
@@ -412,17 +415,7 @@ export interface Sandbox {
   /**
    * Subscribe to build events
    */
-  onBuild(callback: (result: BuildOutput) => void | Promise<void>): () => void;
-
-  /**
-   * Set a validation function for the build command
-   */
-  setValidation(fn: (module: Record<string, unknown>) => unknown): void;
-
-  /**
-   * Clear the validation function
-   */
-  clearValidation(): void;
+  onBuild(callback: (result: BuildSuccess) => void | Promise<void>): () => void;
 
   // ---------------------------------------------------------------------------
   // Direct Methods (also available via exec)
