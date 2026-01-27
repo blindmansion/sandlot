@@ -18,6 +18,17 @@
 export { createSandlot } from "./core/sandlot";
 
 // -----------------------------------------------------------------------------
+// Filesystem
+// -----------------------------------------------------------------------------
+
+export {
+  Filesystem,
+  createFilesystem,
+  wrapFilesystemForJustBash,
+} from "./core/fs";
+export type { FilesystemOptions } from "./core/fs";
+
+// -----------------------------------------------------------------------------
 // Shared Module Registry
 // -----------------------------------------------------------------------------
 
@@ -58,7 +69,16 @@ export type {
   SandboxOptions,
   SandboxState,
 
+  // Build types
   BuildOutput,
+  SandboxBuildOptions,
+
+  // Install/Uninstall types
+  InstallResult,
+  UninstallResult,
+
+  // Typecheck types
+  SandboxTypecheckOptions,
 
   // Bundler types
   BundleOptions,
@@ -73,7 +93,7 @@ export type {
   // Execution types
   ExecResult,
 
-  // Filesystem (re-exported from just-bash)
   IFileSystem,
   FsEntry,
+  FsStat,
 } from "./types";

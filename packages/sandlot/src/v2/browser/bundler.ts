@@ -5,7 +5,7 @@ import type {
   BundleOptions,
   BundleResult,
   BundleWarning,
-  IFileSystem,
+  Filesystem,
 } from "../types";
 
 /**
@@ -158,7 +158,7 @@ export class EsbuildWasmBundler implements IBundler {
       : `/${entryPoint}`;
 
     // Verify entry point exists
-    if (!(await fs.exists(normalizedEntry))) {
+    if (!fs.exists(normalizedEntry)) {
       throw new Error(`Entry point not found: ${normalizedEntry}`);
     }
 
@@ -217,7 +217,7 @@ export class EsbuildWasmBundler implements IBundler {
 // =============================================================================
 
 interface VfsPluginOptions {
-  fs: IFileSystem;
+  fs: Filesystem;
   entryPoint: string;
   installedPackages: Record<string, string>;
   sharedModules: Set<string>;
@@ -280,7 +280,7 @@ function createVfsPlugin(options: VfsPluginOptions): EsbuildTypes.Plugin {
         }
 
         // Relative or absolute imports → resolve in VFS
-        const resolved = await resolveVfsPath(fs, args.resolveDir, args.path);
+        const resolved = resolveVfsPath(fs, args.resolveDir, args.path);
         if (resolved) {
           return { path: resolved, namespace: "vfs" };
         }
@@ -296,7 +296,7 @@ function createVfsPlugin(options: VfsPluginOptions): EsbuildTypes.Plugin {
 
       build.onLoad({ filter: /.*/, namespace: "vfs" }, async (args) => {
         try {
-          const contents = await fs.readFile(args.path);
+          const contents = fs.readFile(args.path);
           includedFiles.add(args.path);
 
           return {
@@ -425,11 +425,11 @@ function resolveToEsmUrl(
  * Resolve a relative or absolute path in the VFS.
  * Tries extensions and index files as needed.
  */
-async function resolveVfsPath(
-  fs: IFileSystem,
+function resolveVfsPath(
+  fs: Filesystem,
   resolveDir: string,
   importPath: string
-): Promise<string | null> {
+): string | null {
   // Resolve the path relative to resolveDir
   const resolved = resolvePath(resolveDir, importPath);
 
@@ -440,7 +440,7 @@ async function resolveVfsPath(
   const hasExtension = extensions.some((ext) => resolved.endsWith(ext));
 
   if (hasExtension) {
-    if (await fs.exists(resolved)) {
+    if (fs.exists(resolved)) {
       return resolved;
     }
     return null;
@@ -449,7 +449,7 @@ async function resolveVfsPath(
   // Try adding extensions
   for (const ext of extensions) {
     const withExt = resolved + ext;
-    if (await fs.exists(withExt)) {
+    if (fs.exists(withExt)) {
       return withExt;
     }
   }
@@ -457,7 +457,7 @@ async function resolveVfsPath(
   // Try index files (for directory imports)
   for (const ext of extensions) {
     const indexPath = `${resolved}/index${ext}`;
-    if (await fs.exists(indexPath)) {
+    if (fs.exists(indexPath)) {
       return indexPath;
     }
   }

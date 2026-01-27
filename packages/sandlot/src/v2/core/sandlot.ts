@@ -6,6 +6,8 @@ import type {
   ISharedModuleRegistry,
 } from "../types";
 import { createSharedModuleRegistry } from "./shared-module-registry";
+import { createSandboxImpl, type SandboxContext } from "./sandbox";
+import { Filesystem } from "./fs";
 
 /**
  * Create a new Sandlot instance with the provided implementations.
@@ -46,16 +48,24 @@ export function createSandlot(options: SandlotOptions): Sandlot {
   // Create shared module registry if modules were provided
   const sharedModuleRegistry = createSharedModuleRegistry(sharedModules);
 
+  // Create the context that will be passed to each sandbox
+  const sandboxContext: SandboxContext = {
+    bundler,
+    typechecker,
+    typesResolver,
+    sharedModuleRegistry,
+  };
+
   return {
-    async createSandbox(sandboxOptions?: SandboxOptions): Promise<Sandbox> {
-      // TODO: Implement using sandbox logic
-      // Will use: bundler, typechecker, typesResolver, sharedModuleRegistry, sandboxDefaults
-      void sandboxOptions;
-      void bundler;
-      void typechecker;
-      void typesResolver;
-      void sandboxDefaults;
-      throw new Error("createSandbox not yet implemented");
+    async createSandbox(sandboxOptions: SandboxOptions = {}): Promise<Sandbox> {
+      // Create the virtual filesystem
+      const fs = Filesystem.create({
+        maxSizeBytes: sandboxOptions.maxFilesystemSize ?? sandboxDefaults.maxFilesystemSize,
+        // Note: initialFiles will be written by createSandboxImpl
+      });
+
+      // Create and return the sandbox
+      return createSandboxImpl(fs, sandboxOptions, sandboxContext);
     },
 
     get sharedModules(): ISharedModuleRegistry | null {

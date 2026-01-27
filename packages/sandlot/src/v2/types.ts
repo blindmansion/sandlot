@@ -1,10 +1,12 @@
-import type { IFileSystem, FsEntry } from "just-bash/browser";
+import type { IFileSystem, FsEntry, FsStat } from "just-bash/browser";
+import type { Filesystem } from "./core/fs";
 
 // =============================================================================
 // Re-export filesystem types for convenience
 // =============================================================================
 
-export type { IFileSystem, FsEntry } from "just-bash/browser";
+export type { IFileSystem, FsEntry, FsStat } from "just-bash/browser";
+export type { Filesystem } from "./core/fs";
 
 // =============================================================================
 // Bundler Interface
@@ -23,7 +25,7 @@ export interface IBundler {
 }
 
 export interface BundleOptions {
-  fs: IFileSystem;
+  fs: Filesystem;
   entryPoint: string;
 
   /**
@@ -84,8 +86,11 @@ export interface ITypechecker {
 }
 
 export interface TypecheckOptions {
-  fs: IFileSystem;
+  /** Sync filesystem to read source files from */
+  fs: Filesystem;
+  /** Entry point path (absolute path in the filesystem) */
   entryPoint: string;
+  /** Path to tsconfig.json (default: "/tsconfig.json") */
   tsconfigPath?: string;
 }
 
@@ -199,7 +204,6 @@ export interface SandlotOptions {
    */
   sandboxDefaults?: {
     maxFilesystemSize?: number;
-    tsconfigPath?: string;
   };
 }
 
@@ -209,7 +213,16 @@ export interface SandlotOptions {
 
 export interface SandboxOptions {
   /**
-   * Initial files to populate the filesystem with
+   * Initial files to populate the filesystem with.
+   *
+   * If `/package.json` is not provided, a default one will be created with:
+   * ```json
+   * { "main": "./index.ts", "dependencies": {} }
+   * ```
+   *
+   * If `/tsconfig.json` is not provided, sensible defaults will be created.
+   *
+   * The `main` field in package.json determines the entry point for build/typecheck.
    */
   initialFiles?: Record<string, string>;
 
@@ -217,11 +230,6 @@ export interface SandboxOptions {
    * Maximum filesystem size in bytes
    */
   maxFilesystemSize?: number;
-
-  /**
-   * Path to tsconfig.json in the virtual filesystem
-   */
-  tsconfigPath?: string;
 
   /**
    * Callback invoked when a build succeeds
@@ -234,11 +242,85 @@ export interface BuildOutput {
   module: Record<string, unknown>;
 }
 
+// -----------------------------------------------------------------------------
+// Install/Uninstall Types
+// -----------------------------------------------------------------------------
+
+export interface InstallResult {
+  /** Package name */
+  name: string;
+  /** Resolved version */
+  version: string;
+  /** Whether type definitions were installed */
+  typesInstalled: boolean;
+  /** Number of .d.ts files written */
+  typeFilesCount: number;
+  /** Whether types came from cache */
+  fromCache?: boolean;
+  /** Error message if types failed to install */
+  typesError?: string;
+}
+
+export interface UninstallResult {
+  /** Package name */
+  name: string;
+  /** Whether the package was installed (and thus removed) */
+  removed: boolean;
+}
+
+// -----------------------------------------------------------------------------
+// Build Options
+// -----------------------------------------------------------------------------
+
+export interface SandboxBuildOptions {
+  /**
+   * Entry point to build.
+   * If not specified, reads from `main` field in /package.json.
+   * Falls back to "./index.ts" if not found.
+   */
+  entryPoint?: string;
+
+  /**
+   * Skip type checking before bundling.
+   * @default false
+   */
+  skipTypecheck?: boolean;
+
+  /**
+   * Minify the output.
+   * @default false
+   */
+  minify?: boolean;
+
+  /**
+   * Output format.
+   * @default "esm"
+   */
+  format?: "esm" | "iife" | "cjs";
+}
+
+// -----------------------------------------------------------------------------
+// Typecheck Options
+// -----------------------------------------------------------------------------
+
+export interface SandboxTypecheckOptions {
+  /**
+   * Entry point to typecheck.
+   * If not specified, reads from `main` field in /package.json.
+   * Falls back to "./index.ts" if not found.
+   */
+  entryPoint?: string;
+}
+
+// -----------------------------------------------------------------------------
+// Sandbox Interface
+// -----------------------------------------------------------------------------
+
 export interface Sandbox {
   /**
-   * The virtual filesystem
+   * The virtual filesystem (sync)
    */
-  readonly fs: IFileSystem;
+  readonly fs: Filesystem;
 
   /**
    * Execute a shell command
@@ -255,6 +337,28 @@ export interface Sandbox {
    */
   getState(): SandboxState;
 
+  // ---------------------------------------------------------------------------
+  // File Operations (convenience methods)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Read a file from the virtual filesystem.
+   *
+   * @param path - Absolute path to the file (e.g., "/src/app.ts")
+   * @returns File contents as a string
+   * @throws If the file does not exist
+   */
+  readFile(path: string): string;
+
+  /**
+   * Write a file to the virtual filesystem.
+   * Creates parent directories automatically if they don't exist.
+   *
+   * @param path - Absolute path to the file (e.g., "/src/app.ts")
+   * @param content - File contents to write
+   */
+  writeFile(path: string, content: string): void;
+
   /**
    * Subscribe to build events
    */
@@ -269,6 +373,52 @@ export interface Sandbox {
    * Clear the validation function
    */
   clearValidation(): void;
+
+  // ---------------------------------------------------------------------------
+  // Direct Methods (also available via exec)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Install a package from npm.
+   * Updates /package.json and fetches type definitions if typesResolver is configured.
+   *
+   * @param packageSpec - Package specifier (e.g., "lodash", "lodash@4.17.21", "@types/node@20")
+   * @returns Installation result with version and types info
+   *
+   * @example
+   * await sandbox.install("lodash@4.17.21");
+   * await sandbox.install("@tanstack/react-query");
+   */
+  install(packageSpec: string): Promise<InstallResult>;
+
+  /**
+   * Uninstall a package.
+   * Removes from /package.json and deletes type definition files.
+   *
+   * @param packageName - Package name (e.g., "lodash", "@tanstack/react-query")
+   * @returns Whether the package was removed
+   */
+  uninstall(packageName: string): Promise<UninstallResult>;
+
+  /**
+   * Build the project.
+   * Reads dependencies from /package.json, optionally typechecks, bundles,
+   * loads the module, runs validation, and fires onBuild callbacks.
+   *
+   * @param options - Build options
+   * @returns Build output with bundle and loaded module
+   * @throws If build fails (typecheck errors, bundle errors, validation errors, load errors)
+   */
+  build(options?: SandboxBuildOptions): Promise<BuildOutput>;
+
+  /**
+   * Type check the project.
+   * Reads tsconfig from filesystem and runs the typechecker.
+   *
+   * @param options - Typecheck options
+   * @returns Typecheck result with diagnostics
+   */
+  typecheck(options?: SandboxTypecheckOptions): Promise<TypecheckResult>;
 }
 
 export interface ExecResult {
