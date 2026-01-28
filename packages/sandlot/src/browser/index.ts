@@ -10,6 +10,24 @@
 //
 // =============================================================================
 
+// =============================================================================
+// Browser Polyfills - inject before anything else loads
+// =============================================================================
+//
+// Some dependencies (like just-bash) reference Node.js globals.
+// Provide shims so they work in the browser without user configuration.
+//
+if (typeof window !== "undefined" && typeof globalThis.process === "undefined") {
+  (globalThis as Record<string, unknown>).process = {
+    env: {},
+    platform: "browser",
+    version: "v20.0.0",
+    browser: true,
+    cwd: () => "/",
+    nextTick: (fn: () => void) => setTimeout(fn, 0),
+  };
+}
+
 // -----------------------------------------------------------------------------
 // Bundler (browser-specific: uses esbuild-wasm)
 // -----------------------------------------------------------------------------

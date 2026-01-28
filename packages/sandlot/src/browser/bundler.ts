@@ -15,6 +15,33 @@ import type {
  */
 const ESBUILD_VERSION = "0.27.2";
 
+// =============================================================================
+// Global Singleton for esbuild-wasm initialization
+// =============================================================================
+// esbuild-wasm can only be initialized once per page. We track this globally
+// so multiple EsbuildWasmBundler instances can share the same initialization.
+
+interface EsbuildGlobalState {
+  esbuild: typeof EsbuildTypes | null;
+  initialized: boolean;
+  initPromise: Promise<void> | null;
+}
+
+const GLOBAL_KEY = "__sandlot_esbuild__";
+
+function getGlobalState(): EsbuildGlobalState {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const g = globalThis as any;
+  if (!g[GLOBAL_KEY]) {
+    g[GLOBAL_KEY] = {
+      esbuild: null,
+      initialized: false,
+      initPromise: null,
+    };
+  }
+  return g[GLOBAL_KEY];
+}
+
 export interface EsbuildWasmBundlerOptions {
   /**
    * URL to the esbuild WASM file.
@@ -62,9 +89,6 @@ export interface EsbuildWasmBundlerOptions {
  */
 export class EsbuildWasmBundler implements IBundler {
   private options: EsbuildWasmBundlerOptions;
-  private initPromise: Promise<void> | null = null;
-  private initialized = false;
-  private esbuild: typeof EsbuildTypes | null = null;
 
   constructor(options: EsbuildWasmBundlerOptions = {}) {
     this.options = {
@@ -73,27 +97,37 @@ export class EsbuildWasmBundler implements IBundler {
     };
 
     if (options.eagerInit) {
-      this.initPromise = this.initialize();
+      this.initialize();
     }
   }
 
   /**
    * Initialize the esbuild WASM module.
    * Called automatically on first bundle() if not already initialized.
+   *
+   * Uses a global singleton pattern since esbuild-wasm can only be
+   * initialized once per page.
    */
   async initialize(): Promise<void> {
-    if (this.initialized) return;
+    const state = getGlobalState();
 
-    if (this.initPromise) {
-      await this.initPromise;
+    // Already initialized globally
+    if (state.initialized && state.esbuild) {
       return;
     }
 
-    this.initPromise = this.doInitialize();
-    await this.initPromise;
+    // Another instance is initializing - wait for it
+    if (state.initPromise) {
+      await state.initPromise;
+      return;
+    }
+
+    // We're the first - do the initialization
+    state.initPromise = this.doInitialize(state);
+    await state.initPromise;
   }
 
-  private async doInitialize(): Promise<void> {
+  private async doInitialize(state: EsbuildGlobalState): Promise<void> {
     // Check for cross-origin isolation (needed for SharedArrayBuffer)
     this.checkCrossOriginIsolation();
 
@@ -103,9 +137,9 @@ export class EsbuildWasmBundler implements IBundler {
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const mod: any = await import(/* @vite-ignore */ esbuildUrl);
-    this.esbuild = mod.default ?? mod;
+    const esbuild = mod.default ?? mod;
 
-    if (typeof this.esbuild?.initialize !== "function") {
+    if (typeof esbuild?.initialize !== "function") {
       throw new Error(
         "Failed to load esbuild-wasm: initialize function not found"
       );
@@ -116,8 +150,22 @@ export class EsbuildWasmBundler implements IBundler {
       this.options.wasmUrl ??
       `https://unpkg.com/esbuild-wasm@${ESBUILD_VERSION}/esbuild.wasm`;
 
-    await this.esbuild.initialize({ wasmURL: wasmUrl });
-    this.initialized = true;
+    await esbuild.initialize({ wasmURL: wasmUrl });
+
+    // Store in global state
+    state.esbuild = esbuild;
+    state.initialized = true;
+  }
+
+  /**
+   * Get the initialized esbuild instance.
+   */
+  private getEsbuild(): typeof EsbuildTypes {
+    const state = getGlobalState();
+    if (!state.esbuild) {
+      throw new Error("esbuild not initialized - call initialize() first");
+    }
+    return state.esbuild;
   }
 
   private checkCrossOriginIsolation(): void {
@@ -137,14 +185,7 @@ export class EsbuildWasmBundler implements IBundler {
   async bundle(options: BundleOptions): Promise<BundleResult> {
     await this.initialize();
 
-    if (!this.esbuild) {
-      // Return a failure result instead of throwing
-      return {
-        success: false,
-        errors: [{ text: "esbuild not initialized" }],
-        warnings: [],
-      };
-    }
+    const esbuild = this.getEsbuild();
 
     const {
       fs,
@@ -189,7 +230,7 @@ export class EsbuildWasmBundler implements IBundler {
 
     try {
       // Run esbuild
-      const result = await this.esbuild.build({
+      const result = await esbuild.build({
         entryPoints: [normalizedEntry],
         bundle: true,
         write: false,

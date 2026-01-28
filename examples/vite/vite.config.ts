@@ -21,11 +21,11 @@ export default defineConfig({
   resolve: {
     alias: {
       // Resolve to source files in dev for HMR and to preserve @vite-ignore comments
-      sandlot: path.resolve(__dirname, "../../packages/sandlot/src/index.ts"),
-      "sandlot/internal": path.resolve(
+      "sandlot/browser": path.resolve(
         __dirname,
-        "../../packages/sandlot/src/internal.ts"
+        "../../packages/sandlot/src/browser/index.ts"
       ),
+      sandlot: path.resolve(__dirname, "../../packages/sandlot/src/index.ts"),
     },
   },
 });

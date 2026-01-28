@@ -1,76 +1,130 @@
-import { useState } from "react";
-import { createBuilder } from "sandlot";
+import { useState, useEffect, useRef } from "react";
+import type { Sandbox, Sandlot, Diagnostic, BundleError } from "sandlot";
+import { createBrowserSandlot } from "sandlot/browser";
+
+// Format type check diagnostics for display
+function formatDiagnostics(diagnostics: Diagnostic[]): string {
+  return diagnostics
+    .map((d) => {
+      const loc = d.file && d.line ? `${d.file}:${d.line}${d.column ? `:${d.column}` : ""}` : "";
+      const prefix = d.severity === "error" ? "error" : d.severity === "warning" ? "warning" : "info";
+      return loc ? `${loc} - ${prefix}: ${d.message}` : `${prefix}: ${d.message}`;
+    })
+    .join("\n");
+}
+
+// Format bundle errors for display
+function formatBundleErrors(errors: BundleError[]): string {
+  return errors
+    .map((e) => {
+      if (e.location) {
+        const loc = `${e.location.file}:${e.location.line}${e.location.column ? `:${e.location.column}` : ""}`;
+        let msg = `${loc}: ${e.text}`;
+        if (e.location.lineText) {
+          msg += `\n    ${e.location.lineText}`;
+        }
+        return msg;
+      }
+      return e.text;
+    })
+    .join("\n\n");
+}
 
 export function BasicExample() {
   const [code, setCode] = useState(`// Try editing this TypeScript code!
-export function greet(name: string): string {
-  return \`Hello, \${name}!\`;
-}
-
-export function add(a: number, b: number): number {
-  return a + b;
+export function main() {
+  console.log("Hello from Sandlot!");
+  console.log("2 + 3 =", 2 + 3);
+  return { success: true };
 }
 `);
   const [output, setOutput] = useState("");
   const [isRunning, setIsRunning] = useState(false);
+  const sandlotRef = useRef<Sandlot | null>(null);
+  const sandboxRef = useRef<Sandbox | null>(null);
+
+  // Initialize sandlot once on mount
+  useEffect(() => {
+    createBrowserSandlot().then((sandlot) => {
+      sandlotRef.current = sandlot;
+    });
+  }, []);
 
   const runCode = async () => {
     setIsRunning(true);
     setOutput("");
 
     try {
-      // Create a builder that writes code and builds it
-      const runBuild = createBuilder({
-        sandboxOptions: {},
-        build: async (sandbox, prompt) => {
-          // Write the code directly to the filesystem
-          await sandbox.fs.writeFile("/src/index.ts", prompt);
+      // Ensure sandlot is initialized
+      if (!sandlotRef.current) {
+        sandlotRef.current = await createBrowserSandlot();
+      }
 
-          // Type check first
-          const tscResult = await sandbox.bash.exec("tsc /src/index.ts");
-          if (tscResult.exitCode !== 0) {
-            throw new Error(
-              `Type Error:\n${tscResult.stderr || tscResult.stdout}`
-            );
-          }
+      // Create a fresh sandbox for each run
+      const sandbox = await sandlotRef.current.createSandbox();
+      sandboxRef.current = sandbox;
 
-          // Build the code
-          const buildResult = await sandbox.bash.exec("build /src/index.ts");
-          if (buildResult.exitCode !== 0) {
-            throw new Error(
-              `Build Error:\n${buildResult.stderr || buildResult.stdout}`
-            );
-          }
-        },
-      });
+      // Write the code to the sandbox
+      sandbox.writeFile("/index.ts", code);
 
-      // Run with the code as the "prompt"
-      const result = await runBuild(code);
+      // Build first to get detailed errors
+      const buildResult = await sandbox.build();
 
-      if (result.error) {
-        setOutput(result.error.message);
+      if (!buildResult.success) {
+        // Format detailed error based on which phase failed
+        let errorOutput = `Build failed in ${buildResult.phase} phase:\n\n`;
+
+        switch (buildResult.phase) {
+          case "entry":
+            errorOutput += buildResult.message ?? "Entry point not found";
+            break;
+          case "typecheck":
+            if (buildResult.diagnostics && buildResult.diagnostics.length > 0) {
+              errorOutput += formatDiagnostics(buildResult.diagnostics);
+            } else {
+              errorOutput += "Type check failed (no details available)";
+            }
+            break;
+          case "bundle":
+            if (buildResult.bundleErrors && buildResult.bundleErrors.length > 0) {
+              errorOutput += formatBundleErrors(buildResult.bundleErrors);
+            } else {
+              errorOutput += "Bundle failed (no details available)";
+            }
+            break;
+        }
+
+        setOutput(errorOutput);
         return;
       }
 
-      if (!result.module) {
-        setOutput("Build failed: no output");
+      // Build succeeded - now run the code
+      const result = await sandbox.run({ skipTypecheck: true }); // Skip typecheck since we already did it
+
+      if (!result.success) {
+        setOutput(`Execution Error: ${result.error ?? "Unknown error"}`);
         return;
       }
 
-      // The module is already loaded
-      const mod = result.module as {
-        greet: (name: string) => string;
-        add: (a: number, b: number) => number;
-      };
-
-      // Test the exports
+      // Collect output
       const logs: string[] = [];
-      logs.push(`greet("World") = "${mod.greet("World")}"`);
-      logs.push(`greet("Sandlot") = "${mod.greet("Sandlot")}"`);
-      logs.push(`add(2, 3) = ${mod.add(2, 3)}`);
-      logs.push(`add(10, 20) = ${mod.add(10, 20)}`);
+      
+      // Show captured console output
+      if (result.logs.length > 0) {
+        logs.push(...result.logs);
+      }
 
-      setOutput(logs.join("\n"));
+      // Show return value if present
+      if (result.returnValue !== undefined) {
+        logs.push(`\n[return] ${JSON.stringify(result.returnValue, null, 2)}`);
+      }
+
+      // Show execution time
+      if (result.executionTimeMs !== undefined) {
+        logs.push(`\nCompleted in ${result.executionTimeMs.toFixed(2)}ms`);
+      }
+
+      setOutput(logs.join("\n") || "Code executed successfully (no output)");
     } catch (err) {
       setOutput(`Error: ${err instanceof Error ? err.message : String(err)}`);
     } finally {

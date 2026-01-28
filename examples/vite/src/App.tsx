@@ -1,4 +1,4 @@
-import { BasicExample, BashExample, AgentExample } from "./components";
+import { BasicExample, BashExample } from "./components";
 import "./App.css";
 
 export default function App() {
@@ -6,7 +6,6 @@ export default function App() {
     <div>
       <h1>Sandlot Examples</h1>
       <div className="examples-grid">
-        <AgentExample />
         <BasicExample />
         <BashExample />
       </div>

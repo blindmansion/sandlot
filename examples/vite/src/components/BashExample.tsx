@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
-import { createSandbox, type Sandbox } from "sandlot";
+import type { Sandbox } from "sandlot";
+import { createBrowserSandlot } from "sandlot/browser";
 
 export function BashExample() {
   const [command, setCommand] = useState("ls /");
@@ -7,14 +8,14 @@ export function BashExample() {
   const [sandbox, setSandbox] = useState<Sandbox | null>(null);
 
   useEffect(() => {
-    createSandbox({
-      initialFiles: {
-        "hello.ts": `import { nanoid } from "nanoid";
-console.log("Hello from hello.ts!");
-console.log("Nanoid:", nanoid());`,
-        "math.ts": "export const add = (a: number, b: number) => a + b;",
-      },
-    }).then((newSandbox) => {
+    createBrowserSandlot().then((sandlot) =>
+      sandlot.createSandbox({
+        initialFiles: {
+          "/hello.ts": `console.log("Hello from hello.ts!");`,
+          "/math.ts": "export const add = (a: number, b: number) => a + b;",
+        },
+      })
+    ).then((newSandbox) => {
       setSandbox(newSandbox);
     });
   }, []);
@@ -25,7 +26,7 @@ console.log("Nanoid:", nanoid());`,
     setHistory((prev) => [...prev, `$ ${command}`]);
 
     try {
-      const result = await sandbox.bash.exec(command);
+      const result = await sandbox.exec(command);
       const output = result.stdout || result.stderr || "(no output)";
       setHistory((prev) => [...prev, output]);
     } catch (err) {
@@ -38,11 +39,11 @@ console.log("Nanoid:", nanoid());`,
 
   const quickCommands = [
     { label: "ls /", cmd: "ls /" },
-    { label: "cat hello.ts", cmd: "cat hello.ts" },
-    { label: "install nanoid", cmd: "install nanoid" },
-    { label: "run hello.ts", cmd: "run hello.ts" },
-    { label: "build math.ts", cmd: "build math.ts" },
-    { label: "tsc hello.ts", cmd: "tsc hello.ts" },
+    { label: "cat /hello.ts", cmd: "cat /hello.ts" },
+    { label: "sandlot build", cmd: "sandlot build" },
+    { label: "sandlot run", cmd: "sandlot run" },
+    { label: "sandlot typecheck", cmd: "sandlot typecheck" },
+    { label: "sandlot help", cmd: "sandlot help" },
   ];
 
   return (
