@@ -38,7 +38,7 @@ export interface EsbuildPlugin {
 
 export interface EsbuildPluginBuild {
   onResolve: (
-    options: { filter: RegExp },
+    options: { filter: RegExp; namespace?: string },
     callback: (args: EsbuildResolveArgs) => Promise<EsbuildResolveResult | null | undefined> | EsbuildResolveResult | null | undefined
   ) => void;
   onLoad: (
@@ -51,6 +51,8 @@ export interface EsbuildResolveArgs {
   path: string;
   kind: string;
   resolveDir: string;
+  importer: string;
+  namespace: string;
 }
 
 export interface EsbuildResolveResult {
@@ -133,6 +135,17 @@ export interface VfsPluginOptions {
   sharedModuleRegistry: ISharedModuleRegistry | null;
   cdnBaseUrl: string;
   includedFiles: Set<string>;
+  /**
+   * If true, CDN imports (http/https URLs) will be bundled by esbuild
+   * rather than marked as external. This is required for Node/Bun
+   * since they cannot resolve HTTP imports at runtime.
+   * 
+   * - Browser: false (external) - browser can fetch at runtime
+   * - Node/Bun: true (bundle) - native esbuild fetches during build
+   * 
+   * @default false
+   */
+  bundleCdnImports?: boolean;
 }
 
 /**
@@ -155,6 +168,7 @@ export function createVfsPlugin(options: VfsPluginOptions): EsbuildPlugin {
     sharedModuleRegistry,
     cdnBaseUrl,
     includedFiles,
+    bundleCdnImports = false,
   } = options;
 
   return {
@@ -165,13 +179,25 @@ export function createVfsPlugin(options: VfsPluginOptions): EsbuildPlugin {
       // ---------------------------------------------------------------------
 
       build.onResolve({ filter: /.*/ }, async (args) => {
+        // Skip if this is a resolution from the http namespace
+        // (those are handled by the http-specific onResolve handler)
+        if (args.namespace === "http") {
+          return undefined;
+        }
+        
         // Entry point → VFS namespace
         if (args.kind === "entry-point") {
           return { path: entryPoint, namespace: "vfs" };
         }
 
-        // HTTP/HTTPS URLs are always external (CDN imports)
+        // HTTP/HTTPS URLs handling
+        // - Browser: mark as external (browser fetches at runtime)
+        // - Node/Bun: use http namespace to fetch and bundle
         if (args.path.startsWith("http://") || args.path.startsWith("https://")) {
+          if (bundleCdnImports) {
+            // Put in http namespace so our onLoad handler can fetch it
+            return { path: args.path, namespace: "http" };
+          }
           return { path: args.path, external: true };
         }
 
@@ -186,6 +212,10 @@ export function createVfsPlugin(options: VfsPluginOptions): EsbuildPlugin {
           // Rewrite to CDN URL if package is installed
           const cdnUrl = resolveToEsmUrl(args.path, installedPackages, cdnBaseUrl);
           if (cdnUrl) {
+            if (bundleCdnImports) {
+              // Use http namespace so our onLoad handler can fetch it
+              return { path: cdnUrl, namespace: "http" };
+            }
             return { path: cdnUrl, external: true };
           }
 
@@ -243,8 +273,93 @@ export function createVfsPlugin(options: VfsPluginOptions): EsbuildPlugin {
           loader: "js",
         };
       });
+
+      // ---------------------------------------------------------------------
+      // Loading & Resolution: HTTP/HTTPS URLs (for Node/Bun bundling)
+      // ---------------------------------------------------------------------
+
+      if (bundleCdnImports) {
+        // Resolve imports from within HTTP modules
+        // The importer will be the full HTTP URL
+        build.onResolve({ filter: /.*/, namespace: "http" }, (args) => {
+          const importerUrl = args.importer; // e.g., https://esm.sh/nanoid@latest
+          
+          // Node.js built-in modules should be external (resolved at runtime)
+          if (args.path.startsWith("node:")) {
+            return { path: args.path, external: true };
+          }
+          
+          if (args.path.startsWith("http://") || args.path.startsWith("https://")) {
+            // Already a full URL
+            return { path: args.path, namespace: "http" };
+          }
+          
+          if (args.path.startsWith("/")) {
+            // Absolute path - resolve against the origin
+            const origin = new URL(importerUrl).origin;
+            return { path: origin + args.path, namespace: "http" };
+          }
+          
+          if (args.path.startsWith(".")) {
+            // Relative path - resolve against the importer's directory
+            const resolved = new URL(args.path, importerUrl).href;
+            return { path: resolved, namespace: "http" };
+          }
+          
+          // Bare import from within an HTTP module - check if it's a known package
+          // This handles cases where a CDN module imports another package
+          const cdnUrl = resolveToEsmUrl(args.path, installedPackages, cdnBaseUrl);
+          if (cdnUrl) {
+            return { path: cdnUrl, namespace: "http" };
+          }
+          
+          // Unknown bare import - try to resolve from the CDN with latest version
+          // (esm.sh and similar CDNs can resolve packages automatically)
+          const fallbackUrl = `${cdnBaseUrl}/${args.path}`;
+          return { path: fallbackUrl, namespace: "http" };
+        });
+
+        // Load HTTP modules by fetching them
+        build.onLoad({ filter: /.*/, namespace: "http" }, async (args) => {
+          try {
+            const response = await fetch(args.path);
+            if (!response.ok) {
+              return {
+                errors: [{ text: `Failed to fetch ${args.path}: ${response.status} ${response.statusText}` }],
+              };
+            }
+
+            const contents = await response.text();
+            
+            // Determine loader from URL
+            const loader = getLoaderFromUrl(args.path);
+
+            return {
+              contents,
+              loader,
+              // Don't set resolveDir - we'll handle resolution via namespace
+            };
+          } catch (err) {
+            return {
+              errors: [{ text: `Failed to fetch ${args.path}: ${err}` }],
+            };
+          }
+        });
+      }
     },
   };
+}
+
+/**
+ * Get the appropriate loader based on URL path
+ */
+function getLoaderFromUrl(url: string): EsbuildLoader {
+  try {
+    const pathname = new URL(url).pathname;
+    return getLoader(pathname);
+  } catch {
+    return "js";
+  }
 }
 
 // =============================================================================

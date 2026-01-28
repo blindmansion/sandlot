@@ -112,6 +112,8 @@ export class EsbuildNativeBundler implements IBundler {
     const includedFiles = new Set<string>();
 
     // Create the VFS plugin
+    // Note: bundleCdnImports is true for Node/Bun because they cannot
+    // resolve HTTP imports at runtime - native esbuild will fetch and bundle them
     const plugin = createVfsPlugin({
       fs,
       entryPoint: normalizedEntry,
@@ -120,12 +122,14 @@ export class EsbuildNativeBundler implements IBundler {
       sharedModuleRegistry: sharedModuleRegistry ?? null,
       cdnBaseUrl: this.options.cdnBaseUrl!,
       includedFiles,
+      bundleCdnImports: true,
     });
 
     try {
       // Run esbuild
-      // Note: Native esbuild needs explicit external patterns for HTTP URLs
-      // (esbuild-wasm in browser handles this automatically)
+      // Note: We do NOT mark http/https as external here because Node/Bun
+      // cannot resolve HTTP imports at runtime. Instead, bundleCdnImports: true
+      // tells the VFS plugin to let native esbuild fetch and bundle CDN imports.
       const result = await esbuild.build({
         entryPoints: [normalizedEntry],
         bundle: true,
@@ -134,7 +138,7 @@ export class EsbuildNativeBundler implements IBundler {
         minify,
         sourcemap: sourcemap ? "inline" : false,
         target,
-        external: [...external, "http://*", "https://*"],
+        external,
         // Cast to esbuild's Plugin type since our minimal interface is compatible
         plugins: [plugin as EsbuildTypes.Plugin],
         jsx: "automatic",
