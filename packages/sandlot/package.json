@@ -1,6 +1,6 @@
 {
   "name": "sandlot",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "TypeScript sandbox with esbuild bundling and type checking for browser and server",
   "author": "blindmansion",
   "repository": {
