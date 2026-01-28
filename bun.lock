@@ -4,6 +4,9 @@
   "workspaces": {
     "": {
       "name": "sandlot-monorepo",
+      "dependencies": {
+        "just-bash": "^2.7.0",
+      },
     },
     "examples/bun": {
       "name": "bun",

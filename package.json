@@ -8,5 +8,8 @@
     "start:bun": "bun run --cwd examples/bun start",
     "build:sandlot": "bun run --cwd packages/sandlot build",
     "publish:sandlot": "cd packages/sandlot && bunx npm login && bunx npm publish"
+  },
+  "dependencies": {
+    "just-bash": "^2.7.0"
   }
 }
