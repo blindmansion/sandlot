@@ -7,6 +7,8 @@
 
 import type {
   ISharedModuleRegistry,
+  BundleOptions,
+  BundleResult,
   BundleWarning,
   BundleError,
   BundleLocation,
@@ -627,4 +629,150 @@ export function generateSharedModuleCode(
   }
 
   return code;
+}
+
+// =============================================================================
+// Shared Bundle Execution
+// =============================================================================
+
+/**
+ * Minimal esbuild interface needed for bundling.
+ * Compatible with both esbuild and esbuild-wasm.
+ *
+ * Uses a loose `Record<string, unknown>` for build options to avoid
+ * type conflicts between the various esbuild module signatures.
+ */
+export interface EsbuildInstance {
+  build(options: Record<string, unknown>): Promise<{
+    outputFiles?: Array<{ text: string }>;
+    warnings: EsbuildMessage[];
+  }>;
+}
+
+/**
+ * Options for the shared bundle execution helper.
+ */
+export interface ExecuteBundleOptions {
+  /** The esbuild instance to use */
+  esbuild: EsbuildInstance;
+  /** Bundle options from the IBundler interface */
+  bundleOptions: BundleOptions;
+  /** Base URL for CDN imports */
+  cdnBaseUrl: string;
+  /**
+   * Whether to bundle CDN imports inline.
+   * - Browser: false (external) - browser can fetch at runtime
+   * - Node/Bun: true (bundle) - esbuild fetches during build
+   */
+  bundleCdnImports: boolean;
+}
+
+/**
+ * Execute a bundle using esbuild with the VFS plugin.
+ *
+ * This is the shared implementation used by both browser and node WASM bundlers.
+ * It handles entry point normalization, VFS plugin creation, and error handling.
+ *
+ * @param options - Bundle execution options
+ * @returns Bundle result with code or errors
+ */
+export async function executeBundleWithEsbuild(
+  options: ExecuteBundleOptions
+): Promise<BundleResult> {
+  const { esbuild, bundleOptions, cdnBaseUrl, bundleCdnImports } = options;
+
+  const {
+    fs,
+    entryPoint,
+    installedPackages = {},
+    sharedModules = [],
+    sharedModuleRegistry,
+    external = [],
+    format = "esm",
+    minify = false,
+    sourcemap = false,
+    target = ["es2020"],
+  } = bundleOptions;
+
+  // Normalize entry point to absolute path
+  const normalizedEntry = entryPoint.startsWith("/")
+    ? entryPoint
+    : `/${entryPoint}`;
+
+  // Verify entry point exists
+  if (!fs.exists(normalizedEntry)) {
+    return {
+      success: false,
+      errors: [{ text: `Entry point not found: ${normalizedEntry}` }],
+      warnings: [],
+    };
+  }
+
+  // Track files included in the bundle
+  const includedFiles = new Set<string>();
+
+  // Create the VFS plugin
+  const plugin = createVfsPlugin({
+    fs,
+    entryPoint: normalizedEntry,
+    installedPackages,
+    sharedModules: new Set(sharedModules),
+    sharedModuleRegistry: sharedModuleRegistry ?? null,
+    cdnBaseUrl,
+    includedFiles,
+    bundleCdnImports,
+  });
+
+  try {
+    // Run esbuild
+    const result = await esbuild.build({
+      entryPoints: [normalizedEntry],
+      bundle: true,
+      write: false,
+      format,
+      minify,
+      sourcemap: sourcemap ? "inline" : false,
+      target,
+      external,
+      plugins: [plugin],
+      jsx: "automatic",
+    });
+
+    const code = result.outputFiles?.[0]?.text ?? "";
+
+    // Convert esbuild warnings to our format
+    const warnings: BundleWarning[] = result.warnings.map((w) =>
+      convertEsbuildMessage(w)
+    );
+
+    return {
+      success: true,
+      code,
+      warnings,
+      includedFiles: Array.from(includedFiles),
+    };
+  } catch (err) {
+    // esbuild throws BuildFailure with .errors array
+    if (isEsbuildBuildFailure(err)) {
+      const errors: BundleError[] = err.errors.map((e) =>
+        convertEsbuildMessage(e)
+      );
+      const warnings: BundleWarning[] = err.warnings.map((w) =>
+        convertEsbuildMessage(w)
+      );
+      return {
+        success: false,
+        errors,
+        warnings,
+      };
+    }
+
+    // Unknown error - wrap it
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      success: false,
+      errors: [{ text: message }],
+      warnings: [],
+    };
+  }
 }
