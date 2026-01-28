@@ -6,6 +6,7 @@
     "typecheck": "bunx tsc --noEmit",
     "dev:vite": "bun run --cwd packages/sandlot build && bun run --cwd examples/vite dev",
     "start:bun": "bun run --cwd examples/bun start",
-    "build:sandlot": "bun run --cwd packages/sandlot build"
+    "build:sandlot": "bun run --cwd packages/sandlot build",
+    "publish:sandlot": "cd packages/sandlot && bunx npm login && bunx npm publish"
   }
 }
