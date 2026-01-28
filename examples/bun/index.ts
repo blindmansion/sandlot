@@ -258,8 +258,66 @@ console.log('lodash.compact:', lodash.compact([0, 1, false, 2, '', 3]));`
 });
 
 // =============================================================================
+// Test 11: Tailwind CSS processing
+// =============================================================================
+await runTest("Tailwind CSS processing", async () => {
+  sandbox.writeFile(
+    "/tailwind-test.tsx",
+    `// Component with Tailwind classes
+export function Card() {
+  return (
+    <div className="p-4 bg-blue-500 text-white rounded-lg shadow-md hover:bg-blue-600 transition-colors">
+      <h2 className="text-xl font-bold mb-2">Hello Tailwind</h2>
+      <p className="text-sm opacity-80">This uses Tailwind CSS classes!</p>
+      <button className="mt-4 px-4 py-2 bg-white text-blue-500 rounded hover:bg-gray-100">
+        Click me
+      </button>
+    </div>
+  );
+}
+
+console.log('Tailwind component defined');`
+  );
+  
+  // Build with Tailwind enabled
+  const buildResult = await sandbox.build({ 
+    entryPoint: "/tailwind-test.tsx", 
+    skipTypecheck: true,
+    tailwind: true,
+  });
+  
+  if (!buildResult.success) {
+    throw new Error(`Build failed: ${JSON.stringify(buildResult)}`);
+  }
+  
+  console.log("Build successful!");
+  console.log(`Bundle size: ${(buildResult.code.length / 1024).toFixed(2)} KB`);
+  
+  // Check if Tailwind CSS was generated (look for some expected CSS)
+  const hasBackgroundBlue = buildResult.code.includes('bg-blue-500') || 
+                            buildResult.code.includes('--tw-') ||
+                            buildResult.code.includes('background-color');
+  const hasPadding = buildResult.code.includes('padding') || buildResult.code.includes('p-4');
+  const hasStyleInjection = buildResult.code.includes('createElement') && 
+                            buildResult.code.includes('style');
+  
+  console.log("Contains Tailwind CSS markers:", hasBackgroundBlue || hasPadding);
+  console.log("Contains style injection code:", hasStyleInjection);
+  
+  // Show a snippet of the generated code (first 500 chars of CSS injection)
+  const cssMatch = buildResult.code.match(/style\.textContent\s*=\s*"([^"]{0,800})/);
+  if (cssMatch) {
+    console.log("\nGenerated CSS preview (first 500 chars):");
+    console.log(cssMatch[1].slice(0, 500) + "...");
+  }
+});
+
+// =============================================================================
 // Summary
 // =============================================================================
 console.log("\n" + "=".repeat(60));
 console.log("All tests completed!");
 console.log("=".repeat(60));
+
+// Clean up
+await sandlot.dispose();

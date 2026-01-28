@@ -449,6 +449,56 @@ export interface SandboxBuildOptions {
    * @default "esm"
    */
   format?: "esm" | "iife" | "cjs";
+
+  /**
+   * Enable Tailwind CSS processing.
+   * 
+   * When enabled, scans bundled files for Tailwind classes and generates
+   * the corresponding CSS, which is injected into the bundle.
+   * 
+   * Uses tailwindcss-iso which works in both browser and Node.js environments.
+   * 
+   * @default false
+   * 
+   * @example
+   * // Simple usage - just enable Tailwind
+   * await sandbox.build({ tailwind: true });
+   * 
+   * @example
+   * // With custom theme
+   * await sandbox.build({
+   *   tailwind: {
+   *     css: `@theme { --color-primary: #3b82f6; }`
+   *   }
+   * });
+   */
+  tailwind?: boolean | TailwindOptions;
+}
+
+/**
+ * Options for Tailwind CSS processing.
+ */
+export interface TailwindOptions {
+  /**
+   * Additional CSS to include in output (e.g., @theme directives for custom themes).
+   * 
+   * @example
+   * ```css
+   * @theme {
+   *   --color-primary: #3b82f6;
+   *   --font-sans: "Inter", sans-serif;
+   * }
+   * ```
+   */
+  css?: string;
+
+  /**
+   * Tailwind import statement. Can include modifiers like important(#app).
+   * @default '@import "tailwindcss";'
+   * 
+   * @example '@import "tailwindcss" important(#app);'
+   */
+  importCSS?: string;
 }
 
 // -----------------------------------------------------------------------------

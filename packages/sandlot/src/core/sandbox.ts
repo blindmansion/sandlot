@@ -34,9 +34,11 @@ import type {
   ExecResult,
   RunOptions,
   RunResult,
+  TailwindOptions,
 } from "../types";
 import { Filesystem, wrapFilesystemForJustBash } from "./fs";
 import { createDefaultCommands, type SandboxRef } from "../commands";
+import { generateCssInjectionCode } from "./bundler-utils";
 
 // =============================================================================
 // Default Configuration
@@ -68,6 +70,80 @@ const DEFAULT_TSCONFIG = {
   include: ["**/*.ts", "**/*.tsx"],
   exclude: ["node_modules"],
 };
+
+// =============================================================================
+// Tailwind CSS Processing
+// =============================================================================
+
+/**
+ * Cached generateTailwindCSS function (loaded lazily)
+ */
+let tailwindGenerator: ((options: {
+  content: string;
+  css?: string;
+  importCSS?: string;
+}) => Promise<string>) | null = null;
+
+/**
+ * Load and cache the tailwindcss-iso generateTailwindCSS function.
+ * Uses dynamic import to avoid loading WASM unless needed.
+ */
+async function getTailwindGenerator(): Promise<typeof tailwindGenerator> {
+  if (tailwindGenerator) {
+    return tailwindGenerator;
+  }
+
+  try {
+    // Dynamic import - works in both browser and Node.js
+    // tailwindcss-iso automatically selects the right implementation
+    const tailwindModule = await import("tailwindcss-iso");
+    tailwindGenerator = tailwindModule.generateTailwindCSS;
+    return tailwindGenerator;
+  } catch (err) {
+    throw new Error(
+      `Failed to load tailwindcss-iso: ${err instanceof Error ? err.message : String(err)}. ` +
+      `Make sure tailwindcss-iso is installed.`
+    );
+  }
+}
+
+/**
+ * Process Tailwind CSS for the given source files.
+ * Returns JavaScript code that injects the generated CSS.
+ */
+async function processTailwind(
+  fs: Filesystem,
+  includedFiles: string[],
+  options: TailwindOptions
+): Promise<string> {
+  const generator = await getTailwindGenerator();
+  if (!generator) {
+    throw new Error("Tailwind generator not available");
+  }
+
+  // Collect content from all included files
+  const contentParts: string[] = [];
+  for (const filePath of includedFiles) {
+    try {
+      const content = fs.readFile(filePath);
+      contentParts.push(content);
+    } catch {
+      // File might not exist or be readable, skip it
+    }
+  }
+
+  const content = contentParts.join("\n");
+
+  // Generate Tailwind CSS
+  const tailwindCSS = await generator({
+    content,
+    css: options.css,
+    importCSS: options.importCSS,
+  });
+
+  // Return JS code that injects the CSS
+  return generateCssInjectionCode(tailwindCSS);
+}
 
 // =============================================================================
 // Package Management Helpers (Sync)
@@ -514,15 +590,45 @@ export async function createSandboxImpl(
       };
     }
 
-    // Step 5: Create build output (no loading/execution - that's the executor's job)
+    // Step 5: Process Tailwind CSS (if enabled)
+    let finalCode = bundleResult.code;
+    if (buildOptions?.tailwind) {
+      try {
+        const tailwindOptions: TailwindOptions = 
+          typeof buildOptions.tailwind === "boolean" 
+            ? {} 
+            : buildOptions.tailwind;
+        
+        const tailwindInjection = await processTailwind(
+          fs, 
+          bundleResult.includedFiles, 
+          tailwindOptions
+        );
+        
+        // Prepend Tailwind CSS injection to the bundle
+        finalCode = tailwindInjection + "\n" + bundleResult.code;
+      } catch (err) {
+        // Tailwind processing failed - return as bundle error
+        return {
+          success: false,
+          phase: "bundle",
+          bundleErrors: [{
+            text: `Tailwind processing failed: ${err instanceof Error ? err.message : String(err)}`,
+          }],
+          bundleWarnings: bundleResult.warnings,
+        };
+      }
+    }
+
+    // Step 6: Create build output (no loading/execution - that's the executor's job)
     const output: BuildSuccess = {
       success: true,
-      code: bundleResult.code,
+      code: finalCode,
       includedFiles: bundleResult.includedFiles,
       warnings: bundleResult.warnings,
     };
 
-    // Step 6: Update lastBuild and fire callbacks
+    // Step 7: Update lastBuild and fire callbacks
     lastBuild = output;
     for (const callback of onBuildCallbacks) {
       try {

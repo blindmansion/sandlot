@@ -45,31 +45,30 @@ function formatBundleErrors(errors: BundleError[]): string {
 
 export function SharedModulesExample() {
   const [code, setCode] =
-    useState(`// Testing CSS import support!
-// The bundler should handle .css imports.
+    useState(`// Testing Tailwind CSS support!
+// The bundler scans for Tailwind classes and generates CSS.
 
 import { useState } from 'react';
-import './styles.css';
 
 export function MyComponent() {
   const [count, setCount] = useState(0);
   
   return (
-    <div className="css-test-container">
-      <h3 className="css-test-title">CSS Import Test</h3>
-      <p className="css-test-description">
-        If you see a green border, pink background, and styled buttons - CSS works!
+    <div className="p-6 bg-gradient-to-br from-purple-500 to-pink-500 rounded-xl text-white font-sans text-center shadow-lg">
+      <h3 className="text-xl font-bold mb-4">Tailwind CSS Test</h3>
+      <p className="mb-4 text-purple-100">
+        If you see a purple-pink gradient with rounded corners - Tailwind works!
       </p>
-      <div className="css-test-counter">
+      <div className="flex items-center justify-center gap-4">
         <button
-          className="css-test-button"
+          className="px-4 py-2 bg-white/20 hover:bg-white/30 rounded-lg text-lg font-bold transition-all"
           onClick={() => setCount((c) => c - 1)}
         >
           -
         </button>
-        <span className="css-test-count">{count}</span>
+        <span className="text-3xl font-bold min-w-[60px]">{count}</span>
         <button
-          className="css-test-button"
+          className="px-4 py-2 bg-white/20 hover:bg-white/30 rounded-lg text-lg font-bold transition-all"
           onClick={() => setCount((c) => c + 1)}
         >
           +
@@ -134,62 +133,10 @@ export function MyComponent() {
       // Write the code to the sandbox
       sandbox.writeFile("/index.tsx", code);
 
-      // Write a CSS file to test CSS support
-      sandbox.writeFile("/styles.css", `
-.css-test-container {
-  padding: 20px;
-  background: linear-gradient(135deg, #ff6b9d 0%, #c44569 100%);
-  border-radius: 12px;
-  border: 4px solid #00ff88;
-  color: white;
-  font-family: system-ui, sans-serif;
-  text-align: center;
-}
-
-.css-test-title {
-  margin: 0 0 16px 0;
-  font-size: 1.5em;
-  text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
-}
-
-.css-test-description {
-  margin: 0 0 12px 0;
-  font-weight: bold;
-}
-
-.css-test-counter {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-}
-
-.css-test-button {
-  padding: 8px 16px;
-  font-size: 18px;
-  border: 2px solid #00ff88;
-  border-radius: 6px;
-  background: rgba(0, 255, 136, 0.3);
-  color: white;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.css-test-button:hover {
-  background: rgba(0, 255, 136, 0.5);
-  transform: scale(1.1);
-}
-
-.css-test-count {
-  font-size: 24px;
-  font-weight: bold;
-  min-width: 60px;
-}
-`);
-
-      // Build first to get detailed errors
+      // Build with Tailwind CSS enabled
       const buildResult = await sandbox.build({
         entryPoint: "/index.tsx",
+        tailwind: true,
       });
 
       if (!buildResult.success) {
@@ -261,13 +208,12 @@ export function MyComponent() {
 
         // Show success info
         const logs: string[] = [];
-        logs.push(
-          "[Shared Modules: react, react/jsx-runtime, react-dom/client]",
-        );
+        logs.push("[Tailwind CSS: enabled]");
+        logs.push("[Shared Modules: react, react/jsx-runtime, react-dom/client]");
         logs.push("");
-        logs.push("Component loaded and rendered successfully!");
+        logs.push("Component loaded and rendered with Tailwind CSS!");
         logs.push(
-          `Bundle size: ${(buildResult.code.length / 1024).toFixed(2)} KB`,
+          `Bundle size: ${(buildResult.code.length / 1024).toFixed(2)} KB (includes generated CSS)`,
         );
 
         setOutput(logs.join("\n"));
