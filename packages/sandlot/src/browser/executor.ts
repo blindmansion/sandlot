@@ -8,17 +8,26 @@
  * that provides proper sandboxing.
  */
 
-import type { IExecutor, ExecuteOptions, ExecuteResult } from "../types";
+import type { IExecutor } from "../types";
+import { createBasicExecutor, type BasicExecutorOptions } from "../core/executor";
 
 /**
  * Options for creating a MainThreadExecutor.
  */
-export interface MainThreadExecutorOptions {
-  /**
-   * Default timeout in milliseconds.
-   * @default 30000
-   */
-  defaultTimeout?: number;
+export type MainThreadExecutorOptions = BasicExecutorOptions;
+
+/**
+ * Load a module from code using a Blob URL.
+ * The URL is revoked after import to avoid memory leaks.
+ */
+async function loadModuleFromBlobUrl(code: string): Promise<Record<string, unknown>> {
+  const blob = new Blob([code], { type: "application/javascript" });
+  const url = URL.createObjectURL(blob);
+  try {
+    return await import(/* @vite-ignore */ url);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 /**
@@ -30,7 +39,7 @@ export interface MainThreadExecutorOptions {
  *
  * @example
  * ```ts
- * const executor = new MainThreadExecutor();
+ * const executor = createMainThreadExecutor();
  * const result = await executor.execute(bundledCode, {
  *   entryExport: 'main',
  *   context: { args: ['--verbose'] },
@@ -40,136 +49,13 @@ export interface MainThreadExecutorOptions {
  * ```
  */
 export class MainThreadExecutor implements IExecutor {
-  private defaultTimeout: number;
+  private executor: IExecutor;
 
   constructor(options: MainThreadExecutorOptions = {}) {
-    this.defaultTimeout = options.defaultTimeout ?? 30000;
+    this.executor = createBasicExecutor(loadModuleFromBlobUrl, options);
   }
 
-  async execute(code: string, options: ExecuteOptions = {}): Promise<ExecuteResult> {
-    const {
-      entryExport = "main",
-      context = {},
-      timeout = this.defaultTimeout,
-    } = options;
-
-    const startTime = performance.now();
-    const logs: string[] = [];
-
-    // Capture console output
-    const originalConsole = {
-      log: console.log,
-      warn: console.warn,
-      error: console.error,
-      info: console.info,
-      debug: console.debug,
-    };
-
-    const formatArgs = (...args: unknown[]) =>
-      args
-        .map((v) => (typeof v === "object" ? JSON.stringify(v) : String(v)))
-        .join(" ");
-
-    const captureLog = (...args: unknown[]) => {
-      logs.push(formatArgs(...args));
-      originalConsole.log.apply(console, args);
-    };
-    const captureWarn = (...args: unknown[]) => {
-      logs.push(`[warn] ${formatArgs(...args)}`);
-      originalConsole.warn.apply(console, args);
-    };
-    const captureError = (...args: unknown[]) => {
-      logs.push(`[error] ${formatArgs(...args)}`);
-      originalConsole.error.apply(console, args);
-    };
-    const captureInfo = (...args: unknown[]) => {
-      logs.push(`[info] ${formatArgs(...args)}`);
-      originalConsole.info.apply(console, args);
-    };
-    const captureDebug = (...args: unknown[]) => {
-      logs.push(`[debug] ${formatArgs(...args)}`);
-      originalConsole.debug.apply(console, args);
-    };
-
-    const restoreConsole = () => {
-      console.log = originalConsole.log;
-      console.warn = originalConsole.warn;
-      console.error = originalConsole.error;
-      console.info = originalConsole.info;
-      console.debug = originalConsole.debug;
-    };
-
-    // Install console interceptors
-    console.log = captureLog;
-    console.warn = captureWarn;
-    console.error = captureError;
-    console.info = captureInfo;
-    console.debug = captureDebug;
-
-    try {
-      // Create blob URL and import the module
-      const blob = new Blob([code], { type: "application/javascript" });
-      const url = URL.createObjectURL(blob);
-
-      let module: Record<string, unknown>;
-      try {
-        // @vite-ignore prevents Vite from analyzing this dynamic import
-        module = await import(/* @vite-ignore */ url);
-      } finally {
-        URL.revokeObjectURL(url);
-      }
-
-      // Execute the appropriate export
-      let returnValue: unknown;
-
-      const executeExport = async () => {
-        if (entryExport === "main" && typeof module.main === "function") {
-          // Call main(context)
-          returnValue = await module.main(context);
-        } else if (entryExport === "default" && typeof module.default === "function") {
-          // Call default export (no args)
-          returnValue = await module.default();
-        } else if (entryExport === "default" && module.default !== undefined) {
-          // Default export is a value, not a function
-          returnValue = module.default;
-        }
-        // If neither export exists, top-level code already ran on import
-      };
-
-      // Execute with optional timeout
-      if (timeout > 0) {
-        const timeoutPromise = new Promise<never>((_, reject) => {
-          setTimeout(
-            () => reject(new Error(`Execution timed out after ${timeout}ms`)),
-            timeout
-          );
-        });
-        await Promise.race([executeExport(), timeoutPromise]);
-      } else {
-        await executeExport();
-      }
-
-      const executionTimeMs = performance.now() - startTime;
-      restoreConsole();
-
-      return {
-        success: true,
-        logs,
-        returnValue,
-        executionTimeMs,
-      };
-    } catch (err) {
-      const executionTimeMs = performance.now() - startTime;
-      restoreConsole();
-
-      return {
-        success: false,
-        logs,
-        error: err instanceof Error ? err.message : String(err),
-        executionTimeMs,
-      };
-    }
-  }
+  execute: IExecutor["execute"] = (...args) => this.executor.execute(...args);
 }
 
 /**

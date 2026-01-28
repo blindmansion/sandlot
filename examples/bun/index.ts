@@ -13,3 +13,5 @@ console.log((await sandbox.exec("sandlot install nanoid")).stdout);
 sandbox.writeFile("hello.ts", "import { nanoid } from 'nanoid'; console.log(nanoid());");
 console.log(sandbox.readFile("hello.ts"));
 console.log((await sandbox.exec("sandlot typecheck hello.ts")));
+console.log((await sandbox.exec("sandlot build hello.ts")));
+console.log((await sandbox.exec("sandlot run hello.ts")));
