@@ -166,7 +166,6 @@ export function MyComponent() {
       // Build first to get detailed errors
       const buildResult = await sandbox.build({
         entryPoint: "/index.tsx",
-        skipTypecheck: true,
       });
 
       if (!buildResult.success) {

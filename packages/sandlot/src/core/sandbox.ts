@@ -263,6 +263,88 @@ export async function createSandboxImpl(
   }
 
   // ---------------------------------------------------------------------------
+  // Install types for shared modules (if both registry and resolver exist)
+  // ---------------------------------------------------------------------------
+
+  if (sharedModuleRegistry && typesResolver) {
+    const sharedModuleIds = sharedModuleRegistry.list();
+    
+    // Resolve types for all shared modules in parallel
+    const typesFetches = sharedModuleIds.map(async (moduleId) => {
+      try {
+        const typeFiles = await typesResolver.resolveTypes(moduleId);
+        return { moduleId, typeFiles, error: null };
+      } catch (err) {
+        // Log but don't fail - types are nice to have but not required
+        console.warn(`[sandlot] Failed to fetch types for shared module "${moduleId}":`, err);
+        return { moduleId, typeFiles: {}, error: err };
+      }
+    });
+
+    const results = await Promise.all(typesFetches);
+
+    // Write type files to the filesystem
+    for (const { moduleId, typeFiles } of results) {
+      if (Object.keys(typeFiles).length === 0) continue;
+
+      // Determine the package name (strip subpath for @types resolution)
+      // e.g., "react-dom/client" -> "react-dom"
+      let packageName = moduleId;
+      let subpath: string | undefined;
+      
+      if (moduleId.startsWith("@")) {
+        const parts = moduleId.split("/");
+        if (parts.length >= 2) {
+          packageName = `${parts[0]}/${parts[1]}`;
+          subpath = parts.length > 2 ? parts.slice(2).join("/") : undefined;
+        }
+      } else {
+        const slashIndex = moduleId.indexOf("/");
+        if (slashIndex !== -1) {
+          packageName = moduleId.slice(0, slashIndex);
+          subpath = moduleId.slice(slashIndex + 1);
+        }
+      }
+
+      const packageDir = `/node_modules/${packageName}`;
+      let typesEntry: string | null = null;
+      let fallbackEntry: string | null = null;
+
+      for (const [filePath, content] of Object.entries(typeFiles)) {
+        const fullPath = filePath.startsWith("/")
+          ? filePath
+          : `${packageDir}/${filePath}`;
+        const dir = fullPath.substring(0, fullPath.lastIndexOf("/"));
+        ensureDir(fs, dir);
+        fs.writeFile(fullPath, content);
+
+        // Track types entry: prefer index.d.ts, fallback to first top-level .d.ts
+        const relativePath = fullPath.replace(`${packageDir}/`, "");
+        if (relativePath === "index.d.ts") {
+          typesEntry = "index.d.ts";
+        } else if (!fallbackEntry && relativePath.endsWith(".d.ts") && !relativePath.includes("/")) {
+          fallbackEntry = relativePath;
+        }
+      }
+
+      // Use index.d.ts if found, otherwise use fallback
+      const finalTypesEntry = typesEntry ?? fallbackEntry ?? "index.d.ts";
+
+      // Create package.json if it doesn't exist yet
+      const pkgJsonPath = `${packageDir}/package.json`;
+      if (!fs.exists(pkgJsonPath)) {
+        const pkgJson = {
+          name: packageName,
+          version: "shared",
+          types: finalTypesEntry,
+          main: finalTypesEntry.replace(/\.d\.ts$/, ".js"),
+        };
+        fs.writeFile(pkgJsonPath, JSON.stringify(pkgJson, null, 2));
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Core Methods
   // ---------------------------------------------------------------------------
 
