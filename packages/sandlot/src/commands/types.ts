@@ -10,6 +10,7 @@ import type {
   InstallResult,
   UninstallResult,
   BuildResult,
+  BuildFailureDetails,
   TypecheckResult,
   SandboxBuildOptions,
   SandboxTypecheckOptions,
@@ -105,4 +106,39 @@ export function formatBundleErrors(errors: BundleError[]): string {
       return output;
     })
     .join("\n\n");
+}
+
+/**
+ * Format a build failure for shell output.
+ * Used by both build and run commands for consistent error formatting.
+ *
+ * @param failure - The build failure details
+ * @param prefix - Optional prefix for the error message (default: "Build failed")
+ */
+export function formatBuildFailure(
+  failure: BuildFailureDetails,
+  prefix = "Build failed"
+): string {
+  switch (failure.phase) {
+    case "entry":
+      return `${prefix}: ${failure.message}\n`;
+
+    case "typecheck":
+      if (failure.diagnostics && failure.diagnostics.length > 0) {
+        const errors = failure.diagnostics.filter((d) => d.severity === "error");
+        if (errors.length > 0) {
+          return `${prefix}: Type check errors\n\n${formatDiagnostics(errors)}\n`;
+        }
+      }
+      return `${prefix}: Type check errors\n`;
+
+    case "bundle":
+      if (failure.bundleErrors && failure.bundleErrors.length > 0) {
+        return `${prefix}: Bundle errors\n\n${formatBundleErrors(failure.bundleErrors)}\n`;
+      }
+      return `${prefix}: Bundle error\n`;
+
+    default:
+      return `${prefix}: Unknown error\n`;
+  }
 }

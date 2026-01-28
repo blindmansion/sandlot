@@ -366,8 +366,11 @@ export interface BuildSuccess {
   warnings: BundleWarning[];
 }
 
-export interface BuildFailure {
-  success: false;
+/**
+ * Details about why a build failed.
+ * Used by both BuildResult and RunResult.
+ */
+export interface BuildFailureDetails {
   /** Which phase of the build failed */
   phase: BuildPhase;
   /** Error message (for entry failures) */
@@ -378,6 +381,10 @@ export interface BuildFailure {
   bundleErrors?: BundleError[];
   /** Bundle warnings (may be present even on failure) */
   bundleWarnings?: BundleWarning[];
+}
+
+export interface BuildFailure extends BuildFailureDetails {
+  success: false;
 }
 
 
@@ -500,11 +507,8 @@ export interface RunOptions {
  * If `buildFailure` is present, the build failed before execution.
  */
 export interface RunResult extends ExecuteResult {
-  /** If build failed, contains failure details */
-  buildFailure?: {
-    phase: BuildPhase;
-    message?: string;
-  };
+  /** If build failed, contains failure details (same structure as BuildFailure) */
+  buildFailure?: BuildFailureDetails;
 }
 
 // -----------------------------------------------------------------------------

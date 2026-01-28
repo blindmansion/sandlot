@@ -12,7 +12,12 @@
 import { defineCommand, type CommandContext } from "just-bash/browser";
 import type { SandboxRef } from "./types";
 export type { SandboxRef } from "./types";
-export { formatSize, formatDiagnostics, formatBundleErrors } from "./types";
+export {
+  formatSize,
+  formatDiagnostics,
+  formatBundleErrors,
+  formatBuildFailure,
+} from "./types";
 
 /**
  * Create the main `sandlot` command with all subcommands.
@@ -96,7 +101,12 @@ Examples:
 // Build
 // =============================================================================
 
-import { formatSize, formatDiagnostics, formatBundleErrors } from "./types";
+import {
+  formatSize,
+  formatDiagnostics,
+  formatBundleErrors,
+  formatBuildFailure,
+} from "./types";
 
 async function handleBuild(sandboxRef: SandboxRef, args: (string | undefined)[]) {
   let entryPoint: string | undefined;
@@ -150,37 +160,9 @@ Examples:
 
   // Handle build failure
   if (!result.success) {
-    let stderr = `Build failed`;
-
-    switch (result.phase) {
-      case "entry":
-        stderr = `Build failed: ${result.message}\n`;
-        break;
-
-      case "typecheck":
-        if (result.diagnostics) {
-          const errors = result.diagnostics.filter((d) => d.severity === "error");
-          stderr = `Build failed: Type check errors\n\n${formatDiagnostics(errors)}\n`;
-        } else {
-          stderr = `Build failed: Type check errors\n`;
-        }
-        break;
-
-      case "bundle":
-        if (result.bundleErrors && result.bundleErrors.length > 0) {
-          stderr = `Build failed: Bundle errors\n\n${formatBundleErrors(result.bundleErrors)}\n`;
-        } else {
-          stderr = `Build failed: Bundle error\n`;
-        }
-        break;
-
-      default:
-        stderr = `Build failed: Unknown error\n`;
-    }
-
     return {
       stdout: "",
-      stderr,
+      stderr: formatBuildFailure(result),
       exitCode: 1,
     };
   }
@@ -249,16 +231,16 @@ Examples:
       const formatted = formatDiagnostics(errors);
       return {
         stdout: "",
-        stderr: `Type check failed:\n${formatted}\n`,
+        stderr: `Type check failed\n\n${formatted}\n`,
         exitCode: 1,
       };
     }
 
     const warnings = result.diagnostics.filter((d) => d.severity === "warning");
-    let output = `Type check passed.\n`;
+    let output = `Type check passed\n`;
 
     if (warnings.length > 0) {
-      output += `\nWarnings:\n${formatDiagnostics(warnings)}\n`;
+      output += `\nWarnings:\n\n${formatDiagnostics(warnings)}\n`;
     }
 
     return {
@@ -458,13 +440,9 @@ Examples:
     if (!result.success) {
       let stderr = "";
 
-      // Build failure
+      // Build failure - use the shared formatter
       if (result.buildFailure) {
-        stderr = `Run failed: Build error in ${result.buildFailure.phase} phase`;
-        if (result.buildFailure.message) {
-          stderr += `\n${result.buildFailure.message}`;
-        }
-        stderr += "\n";
+        stderr = formatBuildFailure(result.buildFailure, "Run failed");
       } else {
         // Execution failure
         stderr = `Run failed: ${result.error ?? "Unknown error"}\n`;

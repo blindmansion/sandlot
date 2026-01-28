@@ -47,6 +47,7 @@ export {
   formatSize,
   formatDiagnostics,
   formatBundleErrors,
+  formatBuildFailure,
 } from "./commands";
 export type { SandboxRef } from "./commands";
 
@@ -95,6 +96,7 @@ export type {
   BuildResult,
   BuildSuccess,
   BuildFailure,
+  BuildFailureDetails,
   SandboxBuildOptions,
 
   // Install/Uninstall types

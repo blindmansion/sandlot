@@ -418,10 +418,12 @@ function parseTsConfig(
       configPath
     );
 
-    if (parsed.errors.length > 0) {
+    // Filter out "no inputs found" error (TS18003) - we pass entry points explicitly
+    const relevantErrors = parsed.errors.filter((e) => e.code !== 18003);
+    if (relevantErrors.length > 0) {
       console.warn(
         "[typechecker] tsconfig parse errors:",
-        parsed.errors.map((e) => e.messageText)
+        relevantErrors.map((e) => e.messageText)
       );
     }
 

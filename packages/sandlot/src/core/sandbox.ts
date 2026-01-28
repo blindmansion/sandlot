@@ -513,6 +513,9 @@ export async function createSandboxImpl(
         buildFailure: {
           phase: buildResult.phase,
           message: buildResult.message,
+          diagnostics: buildResult.diagnostics,
+          bundleErrors: buildResult.bundleErrors,
+          bundleWarnings: buildResult.bundleWarnings,
         },
       };
     }
