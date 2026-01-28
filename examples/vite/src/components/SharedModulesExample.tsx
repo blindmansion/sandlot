@@ -110,9 +110,11 @@ export function MyComponent() {
     setIsRunning(true);
     setOutput("");
 
-    // Clear previous render
-    if (renderContainerRef.current) {
-      renderContainerRef.current.innerHTML = "";
+    // Unmount previous React root BEFORE clearing DOM
+    // (React must clean up its nodes before we remove them)
+    if (reactRootRef.current) {
+      reactRootRef.current.unmount();
+      reactRootRef.current = null;
     }
 
     try {
@@ -194,11 +196,6 @@ export function MyComponent() {
             "Error: No component export found. Export a component as 'MyComponent', 'Component', or 'default'.",
           );
           return;
-        }
-
-        // Unmount previous root if exists
-        if (reactRootRef.current) {
-          reactRootRef.current.unmount();
         }
 
         // Create a new React root and render the component
