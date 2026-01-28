@@ -161,6 +161,23 @@ export class EsbuildWasmNodeBundler implements IBundler {
     return state.esbuild;
   }
 
+  /**
+   * Dispose of the esbuild WASM service.
+   * This stops the esbuild service and allows the process to exit.
+   * 
+   * Note: Since esbuild-wasm uses a global singleton, this affects all
+   * instances. After dispose(), you'll need to create a new bundler.
+   */
+  async dispose(): Promise<void> {
+    const state = getGlobalState();
+    if (state.esbuild) {
+      await state.esbuild.stop();
+      state.esbuild = null;
+      state.initialized = false;
+      state.initPromise = null;
+    }
+  }
+
   async bundle(options: BundleOptions): Promise<BundleResult> {
     await this.initialize();
 

@@ -22,6 +22,12 @@ export interface IBundler {
    * Bundle source files from a filesystem into a single output
    */
   bundle(options: BundleOptions): Promise<BundleResult>;
+
+  /**
+   * Dispose of resources held by the bundler (optional).
+   * Called by Sandlot.dispose() to clean up background services.
+   */
+  dispose?(): Promise<void>;
 }
 
 export interface BundleOptions {
@@ -669,4 +675,25 @@ export interface Sandlot {
    * The shared module registry (if shared modules were provided)
    */
   readonly sharedModules: ISharedModuleRegistry | null;
+
+  /**
+   * Dispose of resources held by this Sandlot instance.
+   * 
+   * This should be called when you're done using Sandlot to allow
+   * the process to exit cleanly. It stops any background services
+   * like the esbuild child process.
+   * 
+   * After calling dispose(), this instance should not be used.
+   * 
+   * @example
+   * ```ts
+   * const sandlot = await createNodeSandlot();
+   * const sandbox = await sandlot.createSandbox();
+   * 
+   * // ... do work ...
+   * 
+   * await sandlot.dispose(); // Allow process to exit
+   * ```
+   */
+  dispose(): Promise<void>;
 }

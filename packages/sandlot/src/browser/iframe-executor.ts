@@ -92,14 +92,6 @@ const BOOTSTRAP_HTML = `<!DOCTYPE html>
 <body>
 <script type="module">
 // Capture console methods and forward to parent
-const originalConsole = {
-  log: console.log.bind(console),
-  warn: console.warn.bind(console),
-  error: console.error.bind(console),
-  info: console.info.bind(console),
-  debug: console.debug.bind(console),
-};
-
 function formatArgs(...args) {
   return args
     .map(v => typeof v === "object" ? JSON.stringify(v) : String(v))
@@ -108,7 +100,6 @@ function formatArgs(...args) {
 
 function createLogger(level) {
   return (...args) => {
-    originalConsole[level](...args);
     parent.postMessage({ type: "log", level, args: formatArgs(...args) }, "*");
   };
 }

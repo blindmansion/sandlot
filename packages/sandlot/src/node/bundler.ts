@@ -76,6 +76,17 @@ export class EsbuildNativeBundler implements IBundler {
     return this.esbuild;
   }
 
+  /**
+   * Dispose of the esbuild service.
+   * This stops the esbuild child process and allows the Node.js process to exit.
+   */
+  async dispose(): Promise<void> {
+    if (this.esbuild) {
+      await this.esbuild.stop();
+      this.esbuild = null;
+    }
+  }
+
   async bundle(options: BundleOptions): Promise<BundleResult> {
     await this.initialize();
 

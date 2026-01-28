@@ -73,5 +73,12 @@ export function createSandlot(options: SandlotOptions): Sandlot {
     get sharedModules(): ISharedModuleRegistry | null {
       return sharedModuleRegistry;
     },
+
+    async dispose(): Promise<void> {
+      // Dispose of the bundler if it has a dispose method
+      if (bundler.dispose) {
+        await bundler.dispose();
+      }
+    },
   };
 }

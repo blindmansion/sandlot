@@ -68,23 +68,18 @@ export function createBasicExecutor(
 
       const captureLog = (...args: unknown[]) => {
         logs.push(formatArgs(...args));
-        originalConsole.log.apply(console, args);
       };
       const captureWarn = (...args: unknown[]) => {
         logs.push(`[warn] ${formatArgs(...args)}`);
-        originalConsole.warn.apply(console, args);
       };
       const captureError = (...args: unknown[]) => {
         logs.push(`[error] ${formatArgs(...args)}`);
-        originalConsole.error.apply(console, args);
       };
       const captureInfo = (...args: unknown[]) => {
         logs.push(`[info] ${formatArgs(...args)}`);
-        originalConsole.info.apply(console, args);
       };
       const captureDebug = (...args: unknown[]) => {
         logs.push(`[debug] ${formatArgs(...args)}`);
-        originalConsole.debug.apply(console, args);
       };
 
       const restoreConsole = () => {
