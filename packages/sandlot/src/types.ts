@@ -54,6 +54,14 @@ export interface BundleOptions {
   /** Modules to treat as external (don't bundle or rewrite) */
   external?: string[];
 
+  /**
+   * Path aliases for module resolution (from tsconfig.json paths).
+   * Maps alias patterns to target paths.
+   * 
+   * @example { "@/*": ["/src/*"] }
+   */
+  pathAliases?: Record<string, string[]>;
+
   format?: "esm" | "iife" | "cjs";
   minify?: boolean;
   sourcemap?: boolean;
@@ -534,6 +542,12 @@ export interface RunOptions {
    * @default false
    */
   skipTypecheck?: boolean;
+
+  /**
+   * Enable Tailwind CSS processing.
+   * @default false
+   */
+  tailwind?: boolean | TailwindOptions;
 
   /**
    * Which export to call:

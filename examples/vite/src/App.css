@@ -81,7 +81,9 @@ h1 {
   margin-bottom: 1rem;
 }
 
-button {
+/* Host page buttons - scoped to avoid affecting rendered components */
+.button-row button,
+.example-card > button {
   background: linear-gradient(135deg, #d4883a 0%, #b85c28 100%);
   border: none;
   padding: 0.625rem 1.25rem;
@@ -93,24 +95,29 @@ button {
   transition: opacity 0.2s, transform 0.1s;
 }
 
-button:hover {
+.button-row button:hover,
+.example-card > button:hover {
   opacity: 0.9;
 }
 
-button:active {
+.button-row button:active,
+.example-card > button:active {
   transform: scale(0.98);
 }
 
-button:disabled {
+.button-row button:disabled,
+.example-card > button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
 
-button.secondary {
+.button-row button.secondary,
+.example-card > button.secondary {
   background: #333;
 }
 
-button.secondary:hover {
+.button-row button.secondary:hover,
+.example-card > button.secondary:hover {
   background: #444;
 }
 

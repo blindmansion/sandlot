@@ -148,6 +148,13 @@ export interface VfsPluginOptions {
    * @default false
    */
   bundleCdnImports?: boolean;
+  /**
+   * Path aliases from tsconfig.json paths.
+   * Maps alias patterns to target paths.
+   * 
+   * @example { "@/*": ["/src/*"] }
+   */
+  pathAliases?: Record<string, string[]>;
 }
 
 /**
@@ -171,6 +178,7 @@ export function createVfsPlugin(options: VfsPluginOptions): EsbuildPlugin {
     cdnBaseUrl,
     includedFiles,
     bundleCdnImports = false,
+    pathAliases = {},
   } = options;
 
   return {
@@ -205,6 +213,20 @@ export function createVfsPlugin(options: VfsPluginOptions): EsbuildPlugin {
 
         // Bare imports (not starting with . or /)
         if (isBareImport(args.path)) {
+          // Check if this matches a path alias (e.g., @/components/button)
+          const aliasResolved = resolvePathAlias(args.path, pathAliases);
+          if (aliasResolved) {
+            // Resolve the aliased path in VFS
+            const resolved = resolveVfsPath(fs, "/", aliasResolved);
+            if (resolved) {
+              return { path: resolved, namespace: "vfs" };
+            }
+            // Path alias matched but file not found - let it fail with a clear error
+            return {
+              errors: [{ text: `Cannot resolve path alias: ${args.path} -> ${aliasResolved}` }],
+            };
+          }
+
           // Check if this is a shared module
           const sharedMatch = matchSharedModule(args.path, sharedModules);
           if (sharedMatch) {
@@ -383,6 +405,42 @@ function getLoaderFromUrl(url: string): EsbuildLoader {
  */
 export function isBareImport(path: string): boolean {
   return !path.startsWith(".") && !path.startsWith("/");
+}
+
+/**
+ * Try to resolve an import path using path aliases.
+ * Returns the resolved path if a match is found, null otherwise.
+ * 
+ * Supports wildcard patterns like "@/*" -> "/src/*"
+ */
+export function resolvePathAlias(
+  importPath: string,
+  pathAliases: Record<string, string[]>
+): string | null {
+  for (const [pattern, targets] of Object.entries(pathAliases)) {
+    // Handle wildcard patterns (e.g., "@/*")
+    if (pattern.endsWith("/*")) {
+      const prefix = pattern.slice(0, -2); // Remove "/*"
+      if (importPath.startsWith(prefix + "/")) {
+        const remainder = importPath.slice(prefix.length + 1);
+        // Use the first target that has a wildcard
+        for (const target of targets) {
+          if (target.endsWith("/*")) {
+            const targetPrefix = target.slice(0, -1); // Remove "*", keep "/"
+            return targetPrefix + remainder;
+          }
+        }
+      }
+    }
+    // Handle exact matches (e.g., "@/utils" -> "/src/utils")
+    else if (importPath === pattern) {
+      // Return the first target
+      if (targets.length > 0) {
+        return targets[0];
+      }
+    }
+  }
+  return null;
 }
 
 /**
@@ -722,6 +780,7 @@ export async function executeBundleWithEsbuild(
     sharedModules = [],
     sharedModuleRegistry,
     external = [],
+    pathAliases = {},
     format = "esm",
     minify = false,
     sourcemap = false,
@@ -755,6 +814,7 @@ export async function executeBundleWithEsbuild(
     cdnBaseUrl,
     includedFiles,
     bundleCdnImports,
+    pathAliases,
   });
 
   try {

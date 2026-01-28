@@ -112,6 +112,7 @@ async function handleBuild(sandboxRef: SandboxRef, args: (string | undefined)[])
   let entryPoint: string | undefined;
   let skipTypecheck = false;
   let minify = false;
+  let tailwind = false;
   let format: "esm" | "iife" | "cjs" = "esm";
 
   for (let i = 0; i < args.length; i++) {
@@ -120,6 +121,8 @@ async function handleBuild(sandboxRef: SandboxRef, args: (string | undefined)[])
       skipTypecheck = true;
     } else if (arg === "--minify" || arg === "-m") {
       minify = true;
+    } else if (arg === "--tailwind" || arg === "-t") {
+      tailwind = true;
     } else if ((arg === "--format" || arg === "-f") && args[i + 1]) {
       const f = args[++i]!.toLowerCase();
       if (f === "esm" || f === "iife" || f === "cjs") {
@@ -135,6 +138,7 @@ Options:
   --entry, -e <path>     Entry point (default: from package.json main)
   --skip-typecheck, -s   Skip type checking
   --minify, -m           Minify output
+  --tailwind, -t         Enable Tailwind CSS processing
   --format, -f <fmt>     Output format (esm|iife|cjs)
   --help, -h             Show this help message
 
@@ -142,6 +146,7 @@ Examples:
   sandlot build
   sandlot build --entry /src/main.ts
   sandlot build --skip-typecheck --minify
+  sandlot build --tailwind
 `,
         stderr: "",
         exitCode: 0,
@@ -156,6 +161,7 @@ Examples:
     skipTypecheck,
     minify,
     format,
+    tailwind,
   });
 
   // Handle build failure
@@ -386,6 +392,7 @@ Aliases: sandlot remove, sandlot rm
 async function handleRun(sandboxRef: SandboxRef, args: (string | undefined)[]) {
   let entryPoint: string | undefined;
   let skipTypecheck = false;
+  let tailwind = false;
   let timeout = 30000;
   let entryExport: "main" | "default" = "main";
 
@@ -393,6 +400,8 @@ async function handleRun(sandboxRef: SandboxRef, args: (string | undefined)[]) {
     const arg = args[i];
     if (arg === "--skip-typecheck" || arg === "-s") {
       skipTypecheck = true;
+    } else if (arg === "--tailwind") {
+      tailwind = true;
     } else if ((arg === "--timeout" || arg === "-t") && args[i + 1]) {
       const t = parseInt(args[++i]!, 10);
       if (!isNaN(t)) timeout = t;
@@ -410,6 +419,7 @@ async function handleRun(sandboxRef: SandboxRef, args: (string | undefined)[]) {
 Options:
   --entry, -e <path>      Entry point (default: from package.json main)
   --skip-typecheck, -s    Skip type checking
+  --tailwind              Enable Tailwind CSS processing
   --timeout, -t <ms>      Execution timeout (default: 30000, 0 = none)
   --export, -x <name>     Export to call: main or default (default: main)
   --help, -h              Show this help message
@@ -432,6 +442,7 @@ Examples:
     const result = await sandboxRef.run({
       entryPoint,
       skipTypecheck,
+      tailwind,
       timeout,
       entryExport,
     });

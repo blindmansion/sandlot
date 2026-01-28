@@ -1,4 +1,4 @@
-import { BasicExample, BashExample, IframeExample, SharedModulesExample } from "./components";
+import { BasicExample, BashExample, IframeExample, SharedModulesExample, ShadcnExample } from "./components";
 import "./App.css";
 
 export default function App() {
@@ -8,6 +8,7 @@ export default function App() {
       <div className="examples-grid">
         <BasicExample />
         <SharedModulesExample />
+        <ShadcnExample />
         <IframeExample />
         <BashExample />
       </div>

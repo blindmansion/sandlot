@@ -221,6 +221,62 @@ function getInstalledPackages(fs: Filesystem): Record<string, string> {
 }
 
 /**
+ * Parse tsconfig.json and extract path aliases.
+ * 
+ * Handles baseUrl and paths configuration:
+ * - baseUrl defaults to "." (project root)
+ * - paths like { "@/*": ["./src/*"] } are resolved relative to baseUrl
+ * 
+ * @returns Path aliases as a map of patterns to absolute VFS paths
+ */
+function getPathAliases(fs: Filesystem): Record<string, string[]> {
+  try {
+    if (!fs.exists(TSCONFIG_PATH)) {
+      return {};
+    }
+
+    const content = fs.readFile(TSCONFIG_PATH);
+    const tsconfig = JSON.parse(content);
+    const compilerOptions = tsconfig.compilerOptions ?? {};
+    const paths = compilerOptions.paths;
+
+    if (!paths || typeof paths !== "object") {
+      return {};
+    }
+
+    // Get baseUrl, default to "." (root)
+    const baseUrl = compilerOptions.baseUrl ?? ".";
+    
+    // Normalize baseUrl to absolute path
+    const absoluteBaseUrl = baseUrl === "." ? "/" : 
+      baseUrl.startsWith("/") ? baseUrl : "/" + baseUrl;
+
+    // Convert paths to absolute paths
+    const result: Record<string, string[]> = {};
+    
+    for (const [pattern, targets] of Object.entries(paths)) {
+      if (!Array.isArray(targets)) continue;
+      
+      result[pattern] = targets.map((target: string) => {
+        // Remove leading ./ if present
+        const normalized = target.startsWith("./") ? target.slice(2) : target;
+        // Make absolute relative to baseUrl
+        if (normalized.startsWith("/")) {
+          return normalized;
+        }
+        return absoluteBaseUrl === "/" 
+          ? "/" + normalized 
+          : absoluteBaseUrl + "/" + normalized;
+      });
+    }
+
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+/**
  * Save installed packages to /package.json
  */
 function saveInstalledPackages(
@@ -566,8 +622,9 @@ export async function createSandboxImpl(
       }
     }
 
-    // Step 3: Read installed packages
+    // Step 3: Read installed packages and path aliases
     const installedPackages = getInstalledPackages(fs);
+    const pathAliases = getPathAliases(fs);
 
     // Step 4: Bundle
     const bundleResult = await bundler.bundle({
@@ -576,6 +633,7 @@ export async function createSandboxImpl(
       installedPackages,
       sharedModules: sharedModuleRegistry?.list() ?? [],
       sharedModuleRegistry: sharedModuleRegistry ?? undefined,
+      pathAliases,
       format,
       minify,
     });
@@ -690,6 +748,7 @@ export async function createSandboxImpl(
     const buildResult = await build({
       entryPoint: runOptions?.entryPoint,
       skipTypecheck: runOptions?.skipTypecheck,
+      tailwind: runOptions?.tailwind,
     });
 
     // If build failed, return early with build failure info
