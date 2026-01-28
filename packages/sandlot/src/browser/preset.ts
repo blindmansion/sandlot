@@ -9,9 +9,13 @@ import {
   BrowserTypechecker,
   type BrowserTypecheckerOptions,
 } from "./typechecker";
+import {
+  MainThreadExecutor,
+  type MainThreadExecutorOptions,
+} from "./executor";
 
 export interface CreateBrowserSandlotOptions
-  extends Omit<SandlotOptions, "bundler" | "typechecker" | "typesResolver"> {
+  extends Omit<SandlotOptions, "bundler" | "typechecker" | "typesResolver" | "executor"> {
   /**
    * Custom bundler options, or a pre-configured bundler instance.
    */
@@ -33,6 +37,16 @@ export interface CreateBrowserSandlotOptions
   typesResolver?:
   | EsmTypesResolverOptions
   | SandlotOptions["typesResolver"]
+  | false;
+
+  /**
+   * Custom executor options, or a pre-configured executor instance.
+   * Set to `false` to disable execution (sandbox.run() will throw).
+   * Defaults to MainThreadExecutor.
+   */
+  executor?:
+  | MainThreadExecutorOptions
+  | SandlotOptions["executor"]
   | false;
 }
 
@@ -73,7 +87,7 @@ export interface CreateBrowserSandlotOptions
 export async function createBrowserSandlot(
   options: CreateBrowserSandlotOptions = {}
 ): Promise<Sandlot> {
-  const { bundler, typechecker, typesResolver, ...rest } = options;
+  const { bundler, typechecker, typesResolver, executor, ...rest } = options;
 
   // Create or use provided bundler
   const bundlerInstance = isBundler(bundler)
@@ -103,11 +117,22 @@ export async function createBrowserSandlot(
           typesResolver as EsmTypesResolverOptions | undefined
         );
 
+  // Create or use provided executor (defaults to MainThreadExecutor)
+  const executorInstance =
+    executor === false
+      ? undefined
+      : isExecutor(executor)
+        ? executor
+        : new MainThreadExecutor(
+          executor as MainThreadExecutorOptions | undefined
+        );
+
   return createSandlot({
     ...rest,
     bundler: bundlerInstance,
     typechecker: typecheckerInstance,
     typesResolver: typesResolverInstance,
+    executor: executorInstance,
   });
 }
 
@@ -141,5 +166,14 @@ function isTypesResolver(
     value !== null &&
     "resolveTypes" in value &&
     typeof (value as { resolveTypes: unknown }).resolveTypes === "function"
+  );
+}
+
+function isExecutor(value: unknown): value is SandlotOptions["executor"] {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "execute" in value &&
+    typeof (value as { execute: unknown }).execute === "function"
   );
 }

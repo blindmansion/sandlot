@@ -4,8 +4,6 @@ import type {
   ISharedModuleRegistry,
   BundleOptions,
   BundleResult,
-  BundleSuccess,
-  BundleFailure,
   BundleWarning,
   BundleError,
   BundleLocation,
@@ -128,10 +126,10 @@ export class EsbuildWasmBundler implements IBundler {
     if (!window.crossOriginIsolated) {
       console.warn(
         "[sandlot] Cross-origin isolation is not enabled. " +
-          "esbuild-wasm may have reduced performance or fail on some browsers.\n" +
-          "To enable, add these headers to your server:\n" +
-          "  Cross-Origin-Embedder-Policy: require-corp\n" +
-          "  Cross-Origin-Opener-Policy: same-origin"
+        "esbuild-wasm may have reduced performance or fail on some browsers.\n" +
+        "To enable, add these headers to your server:\n" +
+        "  Cross-Origin-Embedder-Policy: require-corp\n" +
+        "  Cross-Origin-Opener-Policy: same-origin"
       );
     }
   }
@@ -632,7 +630,7 @@ function generateSharedModuleCode(
   registry: ISharedModuleRegistry | null
 ): string {
   const registryKey = getRegistryKey(registry);
-  
+
   if (!registryKey) {
     // This shouldn't happen if the bundler is configured correctly,
     // but provide a clear error if it does

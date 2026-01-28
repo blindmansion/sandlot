@@ -41,6 +41,7 @@ export function createSandlot(options: SandlotOptions): Sandlot {
     bundler,
     typechecker,
     typesResolver,
+    executor,
     sharedModules,
     sandboxDefaults = {},
   } = options;
@@ -54,6 +55,7 @@ export function createSandlot(options: SandlotOptions): Sandlot {
     typechecker,
     typesResolver,
     sharedModuleRegistry,
+    executor,
   };
 
   return {

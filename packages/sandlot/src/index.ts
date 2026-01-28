@@ -1,171 +1,129 @@
 // =============================================================================
-// Browser polyfills - inject before anything else loads
+// Sandlot v2 - Core Entry Point
 // =============================================================================
-
-// Some dependencies (like just-bash) reference Node.js globals.
-// Provide shims so they work in the browser without user configuration.
-if (typeof window !== "undefined" && typeof globalThis.process === "undefined") {
-  (globalThis as Record<string, unknown>).process = {
-    env: {},
-    platform: "browser",
-    version: "v20.0.0",
-    browser: true,
-    cwd: () => "/",
-    nextTick: (fn: () => void) => setTimeout(fn, 0),
-  };
-}
-
-// =============================================================================
-// CORE API - Most users only need these
+//
+// This module exports the core interfaces and factory function.
+// It is context-agnostic - no browser or Node.js specific code.
+//
+// For context-specific implementations, import from:
+//   - "sandlot/browser" - Browser implementations (esbuild-wasm, etc.)
+//   - "sandlot/node"    - Node/Bun implementations (native esbuild, etc.)
+//
 // =============================================================================
 
 // -----------------------------------------------------------------------------
-// Sandbox API
+// Factory Function
 // -----------------------------------------------------------------------------
 
-export {
-  createSandbox,
-  type Sandbox,
-  type SandboxOptions,
-  type SandboxState,
-  type SandboxBashOptions,
-} from "./sandbox";
+export { createSandlot } from "./core/sandlot";
 
 // -----------------------------------------------------------------------------
-// Builder (recommended for agent workflows)
-// -----------------------------------------------------------------------------
-
-export {
-  createBuilder,
-  type BuildResult,
-  type CreateBuilderOptions,
-  type BuildCallOptions,
-  type BuilderFn,
-} from "./builder";
-
-// -----------------------------------------------------------------------------
-// Module Loading (use after build to get exports)
-// -----------------------------------------------------------------------------
-
-export {
-  loadModule,
-  loadExport,
-  loadDefault,
-  getExportNames,
-  hasExport,
-  ModuleLoadError,
-  ExportNotFoundError,
-} from "./loader";
-
-// -----------------------------------------------------------------------------
-// Shared Modules (for React/library sharing with host)
-// -----------------------------------------------------------------------------
-
-export {
-  registerSharedModules,
-  unregisterSharedModule,
-  clearSharedModules,
-} from "./shared-modules";
-
-// -----------------------------------------------------------------------------
-// Common Types
-// -----------------------------------------------------------------------------
-
-export type { BundleResult } from "./bundler";
-export type { BuildOutput, ValidateFn } from "./commands/types";
-export type { TypecheckResult, Diagnostic } from "./typechecker";
-export type { PackageManifest, InstallResult } from "./packages";
-
-
-// =============================================================================
-// ADVANCED API - For power users and custom integrations
-// =============================================================================
-
-// -----------------------------------------------------------------------------
-// Direct Bundler Access
-// -----------------------------------------------------------------------------
-
-export {
-  initBundler,
-  bundle,
-  bundleToUrl,
-  bundleAndImport,
-  type BundleOptions,
-  type NpmImportsMode,
-} from "./bundler";
-
-// -----------------------------------------------------------------------------
-// Direct Typechecker Access
-// -----------------------------------------------------------------------------
-
-export {
-  typecheck,
-  formatDiagnostics,
-  formatDiagnosticsForAgent,
-  type TypecheckOptions,
-} from "./typechecker";
-
-// -----------------------------------------------------------------------------
-// Package Management
-// -----------------------------------------------------------------------------
-
-export {
-  installPackage,
-  uninstallPackage,
-  listPackages,
-  getPackageManifest,
-  type InstallOptions,
-} from "./packages";
-
-// -----------------------------------------------------------------------------
-// Shared Resources (for custom resource management)
-// -----------------------------------------------------------------------------
-
-export {
-  createSharedResources,
-  getDefaultResources,
-  clearDefaultResources,
-  hasDefaultResources,
-  type SharedResourcesOptions,
-  type SharedResources,
-  type TypesCache,
-} from "./shared-resources";
-
-// -----------------------------------------------------------------------------
-// Filesystem (for custom VFS usage)
+// Filesystem
 // -----------------------------------------------------------------------------
 
 export {
   Filesystem,
   createFilesystem,
-  type FilesystemOptions,
-} from "./fs";
-
-export type { IFileSystem, FsEntry } from "just-bash/browser";
-
-// -----------------------------------------------------------------------------
-// TypeScript Library Utilities
-// -----------------------------------------------------------------------------
-
-export {
-  getDefaultBrowserLibs,
-  fetchAndCacheLibs,
-} from "./ts-libs";
+  wrapFilesystemForJustBash,
+} from "./core/fs";
+export type { FilesystemOptions } from "./core/fs";
 
 // -----------------------------------------------------------------------------
-// Command Factories (for custom sandbox commands)
+// Shared Module Registry
 // -----------------------------------------------------------------------------
 
 export {
-  createTscCommand,
-  createBuildCommand,
-  createInstallCommand,
-  createUninstallCommand,
-  createListCommand,
-  createRunCommand,
+  SharedModuleRegistry,
+  createSharedModuleRegistry,
+} from "./core/shared-module-registry";
+
+// -----------------------------------------------------------------------------
+// Commands (for extending the shell with custom commands)
+// -----------------------------------------------------------------------------
+
+export {
+  createSandlotCommand,
   createDefaultCommands,
-  type CommandDeps,
-  type RunContext,
-  type RunOptions,
-  type RunResult,
-} from "./commands/index";
+  formatSize,
+  formatDiagnostics,
+  formatBundleErrors,
+} from "./commands";
+export type { SandboxRef } from "./commands";
+
+// -----------------------------------------------------------------------------
+// Types Resolver (platform-independent, works anywhere with fetch)
+// -----------------------------------------------------------------------------
+
+export {
+  EsmTypesResolver,
+  InMemoryTypesCache,
+} from "./core/esm-types-resolver";
+export type {
+  EsmTypesResolverOptions,
+  ResolvedTypes,
+  ITypesCache,
+} from "./core/esm-types-resolver";
+
+// -----------------------------------------------------------------------------
+// Types - Interfaces
+// -----------------------------------------------------------------------------
+
+export type {
+  // Core interfaces (for implementing your own)
+  IBundler,
+  ITypechecker,
+  ITypesResolver,
+  ISharedModuleRegistry,
+  IExecutor,
+
+  // Main API types
+  Sandlot,
+  SandlotOptions,
+  Sandbox,
+  SandboxOptions,
+  SandboxState,
+
+  // Build types
+  BuildPhase,
+  BuildResult,
+  BuildSuccess,
+  BuildFailure,
+  SandboxBuildOptions,
+
+  // Install/Uninstall types
+  InstallResult,
+  UninstallResult,
+
+  // Typecheck types
+  SandboxTypecheckOptions,
+
+  // Run types
+  RunOptions,
+  RunResult,
+
+  // Executor types
+  ExecuteOptions,
+  ExecuteResult,
+
+  // Bundler types
+  BundleOptions,
+  BundleResult,
+  BundleSuccess,
+  BundleFailure,
+  BundleWarning,
+  BundleError,
+  BundleLocation,
+
+  // Typechecker types
+  TypecheckOptions,
+  TypecheckResult,
+  Diagnostic,
+
+  // Shell execution types
+  ExecResult,
+
+  // Filesystem types
+  IFileSystem,
+  FsEntry,
+  FsStat,
+} from "./types";

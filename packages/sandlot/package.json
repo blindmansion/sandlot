@@ -1,6 +1,6 @@
 {
   "name": "sandlot",
-  "version": "0.1.4",
+  "version": "0.2.0",
   "description": "TypeScript sandbox with esbuild bundling and type checking for browser and server",
   "author": "blindmansion",
   "license": "MIT",
@@ -22,10 +22,10 @@
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
-    "./internal": {
-      "types": "./dist/internal.d.ts",
-      "import": "./dist/internal.js",
-      "default": "./dist/internal.js"
+    "./browser": {
+      "types": "./dist/browser/index.d.ts",
+      "import": "./dist/browser/index.js",
+      "default": "./dist/browser/index.js"
     }
   },
   "files": [
@@ -34,7 +34,7 @@
   ],
   "scripts": {
     "build": "bun run build:js && bun run build:types",
-    "build:js": "bun build ./src/index.ts ./src/internal.ts --outdir ./dist --format esm --packages external",
+    "build:js": "bun build ./src/index.ts ./src/browser/index.ts --outdir ./dist --format esm --packages external",
     "build:types": "tsc --emitDeclarationOnly",
     "prepublishOnly": "bun run build"
   },

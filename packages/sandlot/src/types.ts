@@ -190,6 +190,80 @@ export interface ISharedModuleRegistry {
 }
 
 // =============================================================================
+// Executor Interface
+// =============================================================================
+
+/**
+ * Executor interface - runs bundled code in an isolated context.
+ *
+ * Different implementations provide different isolation levels:
+ * - MainThreadExecutor: Runs in the main thread (no isolation, for trusted code)
+ * - WorkerExecutor: Runs in a Web Worker (memory isolation, can be terminated)
+ * - IframeExecutor: Runs in a sandboxed iframe (DOM isolation, CSP control)
+ *
+ * The executor receives a code string (bundled JavaScript) and options,
+ * and returns the execution result including captured logs and return value.
+ */
+export interface IExecutor {
+  /**
+   * Execute bundled code and return the result.
+   *
+   * @param code - The bundled JavaScript code to execute
+   * @param options - Execution options (entry export, context, timeout)
+   * @returns Execution result with logs, return value, and any error
+   */
+  execute(code: string, options?: ExecuteOptions): Promise<ExecuteResult>;
+}
+
+/**
+ * Options for code execution.
+ */
+export interface ExecuteOptions {
+  /**
+   * Which export to call:
+   * - 'main': Calls `main(context)` export with the provided context
+   * - 'default': Calls the default export (no arguments)
+   *
+   * If neither export exists, top-level code still runs on import.
+   * @default 'main'
+   */
+  entryExport?: "main" | "default";
+
+  /**
+   * Context object passed to `main(context)` when entryExport is 'main'.
+   * Typically includes things like args, env, logging functions.
+   */
+  context?: Record<string, unknown>;
+
+  /**
+   * Execution timeout in milliseconds.
+   * Set to 0 to disable timeout.
+   * @default 30000
+   */
+  timeout?: number;
+}
+
+/**
+ * Result of code execution.
+ */
+export interface ExecuteResult {
+  /** Whether execution completed successfully */
+  success: boolean;
+
+  /** Captured console output (log, warn, error, info, debug) */
+  logs: string[];
+
+  /** Return value from the executed function (if any) */
+  returnValue?: unknown;
+
+  /** Error message if execution failed */
+  error?: string;
+
+  /** Execution time in milliseconds */
+  executionTimeMs?: number;
+}
+
+// =============================================================================
 // Sandlot Configuration
 // =============================================================================
 
@@ -199,6 +273,13 @@ export interface SandlotOptions {
    * Handles its own initialization and WASM loading.
    */
   bundler: IBundler;
+
+  /**
+   * Executor implementation (optional).
+   * Handles running bundled code in an appropriate context.
+   * If not provided, sandbox.run() will throw an error.
+   */
+  executor?: IExecutor;
 
   /**
    * Typechecker implementation (optional - skip type checking if not provided).
@@ -259,6 +340,11 @@ export interface SandboxOptions {
 }
 
 /**
+ * Build phases that can fail.
+ */
+export type BuildPhase = "entry" | "typecheck" | "bundle";
+
+/**
  * Build result - success or failure with structured errors.
  *
  * On success, contains the bundled code string.
@@ -283,7 +369,7 @@ export interface BuildSuccess {
 export interface BuildFailure {
   success: false;
   /** Which phase of the build failed */
-  phase: "entry" | "typecheck" | "bundle";
+  phase: BuildPhase;
   /** Error message (for entry failures) */
   message?: string;
   /** Type check diagnostics (for typecheck failures) */
@@ -366,6 +452,62 @@ export interface SandboxTypecheckOptions {
 }
 
 // -----------------------------------------------------------------------------
+// Run Options and Result
+// -----------------------------------------------------------------------------
+
+/**
+ * Options for running code in the sandbox.
+ */
+export interface RunOptions {
+  /**
+   * Entry point to build and run.
+   * If not specified, reads from `main` field in /package.json.
+   * Falls back to "./index.ts" if not found.
+   */
+  entryPoint?: string;
+
+  /**
+   * Skip type checking before building.
+   * @default false
+   */
+  skipTypecheck?: boolean;
+
+  /**
+   * Which export to call:
+   * - 'main': Calls `main(context)` export with the provided context
+   * - 'default': Calls the default export (no arguments)
+   * @default 'main'
+   */
+  entryExport?: "main" | "default";
+
+  /**
+   * Context object passed to `main(context)` when entryExport is 'main'.
+   */
+  context?: Record<string, unknown>;
+
+  /**
+   * Execution timeout in milliseconds.
+   * Set to 0 to disable timeout.
+   * @default 30000
+   */
+  timeout?: number;
+}
+
+/**
+ * Result of running code in the sandbox.
+ *
+ * Extends ExecuteResult with build failure information.
+ * If `buildFailure` is present, the build failed before execution.
+ */
+export interface RunResult extends ExecuteResult {
+  /** If build failed, contains failure details */
+  buildFailure?: {
+    phase: BuildPhase;
+    message?: string;
+  };
+}
+
+// -----------------------------------------------------------------------------
 // Sandbox Interface
 // -----------------------------------------------------------------------------
 
@@ -445,8 +587,8 @@ export interface Sandbox {
 
   /**
    * Build the project.
-   * Reads dependencies from /package.json, optionally typechecks, bundles,
-   * loads the module, runs validation, and fires onBuild callbacks.
+   * Reads dependencies from /package.json, optionally typechecks, and bundles.
+   * Returns the bundled code string (does NOT execute it).
    *
    * @param options - Build options
    * @returns Build result - check `success` field to determine outcome
@@ -461,6 +603,42 @@ export interface Sandbox {
    * @returns Typecheck result with diagnostics
    */
   typecheck(options?: SandboxTypecheckOptions): Promise<TypecheckResult>;
+
+  /**
+   * Build and run code using the configured executor.
+   *
+   * This is a convenience method that:
+   * 1. Builds the code (typecheck + bundle)
+   * 2. Passes the bundled code to the executor
+   * 3. Returns the execution result
+   *
+   * Requires an executor to be configured when creating Sandlot.
+   *
+   * @param options - Run options (entry point, context, timeout, etc.)
+   * @returns Run result with logs, return value, and any error
+   * @throws If no executor was configured
+   *
+   * @example
+   * ```ts
+   * // Script style - top-level code runs on import
+   * sandbox.writeFile('/index.ts', 'console.log("Hello!")');
+   * const result = await sandbox.run();
+   * console.log(result.logs); // ['Hello!']
+   *
+   * // Main function style - gets context
+   * sandbox.writeFile('/index.ts', `
+   *   export function main(ctx) {
+   *     ctx.log("Args:", ctx.args);
+   *     return { success: true };
+   *   }
+   * `);
+   * const result = await sandbox.run({
+   *   context: { args: ['--verbose'] }
+   * });
+   * console.log(result.returnValue); // { success: true }
+   * ```
+   */
+  run(options?: RunOptions): Promise<RunResult>;
 }
 
 export interface ExecResult {

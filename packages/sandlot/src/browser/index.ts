@@ -25,6 +25,13 @@ export { BrowserTypechecker } from "./typechecker";
 export type { BrowserTypecheckerOptions } from "./typechecker";
 
 // -----------------------------------------------------------------------------
+// Executor (browser-specific: runs in main thread)
+// -----------------------------------------------------------------------------
+
+export { MainThreadExecutor, createMainThreadExecutor } from "./executor";
+export type { MainThreadExecutorOptions } from "./executor";
+
+// -----------------------------------------------------------------------------
 // Convenience Preset
 // -----------------------------------------------------------------------------
 

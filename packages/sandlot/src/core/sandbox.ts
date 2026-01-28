@@ -20,6 +20,7 @@ import type {
   ITypechecker,
   ITypesResolver,
   ISharedModuleRegistry,
+  IExecutor,
   Sandbox,
   SandboxOptions,
   SandboxState,
@@ -31,6 +32,8 @@ import type {
   UninstallResult,
   TypecheckResult,
   ExecResult,
+  RunOptions,
+  RunResult,
 } from "../types";
 import { Filesystem, wrapFilesystemForJustBash } from "./fs";
 import { createDefaultCommands, type SandboxRef } from "../commands";
@@ -192,6 +195,7 @@ export interface SandboxContext {
   typechecker?: ITypechecker;
   typesResolver?: ITypesResolver;
   sharedModuleRegistry: ISharedModuleRegistry | null;
+  executor?: IExecutor;
 }
 
 // =============================================================================
@@ -212,6 +216,7 @@ export async function createSandboxImpl(
     typechecker,
     typesResolver,
     sharedModuleRegistry,
+    executor,
   } = context;
 
   // ---------------------------------------------------------------------------
@@ -457,6 +462,53 @@ export async function createSandboxImpl(
     });
   }
 
+  /**
+   * Build and run code using the configured executor.
+   */
+  async function run(runOptions?: RunOptions): Promise<RunResult> {
+    // Ensure executor is configured
+    if (!executor) {
+      throw new Error(
+        "[sandlot] No executor configured. Provide an executor when creating Sandlot to use run()."
+      );
+    }
+
+    // Step 1: Build the code
+    const buildResult = await build({
+      entryPoint: runOptions?.entryPoint,
+      skipTypecheck: runOptions?.skipTypecheck,
+    });
+
+    // If build failed, return early with build failure info
+    if (!buildResult.success) {
+      return {
+        success: false,
+        logs: [],
+        error: buildResult.message ?? `Build failed in ${buildResult.phase} phase`,
+        buildFailure: {
+          phase: buildResult.phase,
+          message: buildResult.message,
+        },
+      };
+    }
+
+    // Step 2: Execute via the executor
+    const executeResult = await executor.execute(buildResult.code, {
+      entryExport: runOptions?.entryExport ?? "main",
+      context: runOptions?.context,
+      timeout: runOptions?.timeout,
+    });
+
+    // Return the execution result
+    return {
+      success: executeResult.success,
+      logs: executeResult.logs,
+      returnValue: executeResult.returnValue,
+      error: executeResult.error,
+      executionTimeMs: executeResult.executionTimeMs,
+    };
+  }
+
   // ---------------------------------------------------------------------------
   // Shell Environment (lazy initialization)
   // ---------------------------------------------------------------------------
@@ -468,6 +520,7 @@ export async function createSandboxImpl(
     uninstall,
     build,
     typecheck,
+    run,
   };
 
   // Lazily initialized Bash instance
@@ -534,6 +587,7 @@ export async function createSandboxImpl(
     uninstall,
     build,
     typecheck,
+    run,
 
     // File operations (fs handles path normalization and parent dir creation)
     readFile: (path: string) => fs.readFile(path),
