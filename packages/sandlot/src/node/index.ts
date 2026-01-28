@@ -18,6 +18,16 @@ export { EsbuildNativeBundler, createEsbuildNativeBundler } from "./bundler";
 export type { EsbuildNativeBundlerOptions } from "./bundler";
 
 // -----------------------------------------------------------------------------
+// WASM Bundler (for testing consistency with browser bundler)
+// -----------------------------------------------------------------------------
+
+export {
+  EsbuildWasmNodeBundler,
+  createEsbuildWasmNodeBundler,
+} from "./wasm-bundler";
+export type { EsbuildWasmNodeBundlerOptions } from "./wasm-bundler";
+
+// -----------------------------------------------------------------------------
 // Typechecker (platform-agnostic: re-exported for convenience)
 // -----------------------------------------------------------------------------
 
