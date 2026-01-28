@@ -50,6 +50,13 @@ export { MainThreadExecutor, createMainThreadExecutor } from "./executor";
 export type { MainThreadExecutorOptions } from "./executor";
 
 // -----------------------------------------------------------------------------
+// Iframe Executor (browser-specific: runs in sandboxed iframe)
+// -----------------------------------------------------------------------------
+
+export { IframeExecutor, createIframeExecutor } from "./iframe-executor";
+export type { IframeExecutorOptions } from "./iframe-executor";
+
+// -----------------------------------------------------------------------------
 // Convenience Preset
 // -----------------------------------------------------------------------------
 

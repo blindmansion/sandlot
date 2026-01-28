@@ -13,6 +13,10 @@ import {
   MainThreadExecutor,
   type MainThreadExecutorOptions,
 } from "./executor";
+import {
+  IframeExecutor,
+  type IframeExecutorOptions,
+} from "./iframe-executor";
 
 export interface CreateBrowserSandlotOptions
   extends Omit<SandlotOptions, "bundler" | "typechecker" | "typesResolver" | "executor"> {
@@ -42,11 +46,17 @@ export interface CreateBrowserSandlotOptions
   /**
    * Custom executor options, or a pre-configured executor instance.
    * Set to `false` to disable execution (sandbox.run() will throw).
+   * Set to `"iframe"` to use IframeExecutor with default options.
    * Defaults to MainThreadExecutor.
+   *
+   * Note: IframeExecutor does NOT support shared modules. Use MainThreadExecutor
+   * (the default) if you need shared modules like React.
    */
   executor?:
   | MainThreadExecutorOptions
+  | IframeExecutorOptions
   | SandlotOptions["executor"]
+  | "iframe"
   | false;
 }
 
@@ -121,11 +131,15 @@ export async function createBrowserSandlot(
   const executorInstance =
     executor === false
       ? undefined
-      : isExecutor(executor)
-        ? executor
-        : new MainThreadExecutor(
-          executor as MainThreadExecutorOptions | undefined
-        );
+      : executor === "iframe"
+        ? new IframeExecutor()
+        : isExecutor(executor)
+          ? executor
+          : isIframeExecutorOptions(executor)
+            ? new IframeExecutor(executor)
+            : new MainThreadExecutor(
+              executor as MainThreadExecutorOptions | undefined
+            );
 
   return createSandlot({
     ...rest,
@@ -175,5 +189,15 @@ function isExecutor(value: unknown): value is SandlotOptions["executor"] {
     value !== null &&
     "execute" in value &&
     typeof (value as { execute: unknown }).execute === "function"
+  );
+}
+
+function isIframeExecutorOptions(value: unknown): value is IframeExecutorOptions {
+  // IframeExecutorOptions has "sandbox" or "container" properties
+  // MainThreadExecutorOptions only has "defaultTimeout"
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    ("sandbox" in value || "container" in value)
   );
 }
