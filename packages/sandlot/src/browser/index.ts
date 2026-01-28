@@ -46,8 +46,8 @@ export type { EsbuildWasmBundlerOptions } from "./bundler";
 // Executor (browser-specific: runs in main thread)
 // -----------------------------------------------------------------------------
 
-export { MainThreadExecutor, createMainThreadExecutor } from "./executor";
-export type { MainThreadExecutorOptions } from "./executor";
+export { MainThreadExecutor, createMainThreadExecutor } from "./main-thread-executor";
+export type { MainThreadExecutorOptions } from "./main-thread-executor";
 
 // -----------------------------------------------------------------------------
 // Iframe Executor (browser-specific: runs in sandboxed iframe)

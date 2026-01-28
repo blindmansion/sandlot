@@ -12,7 +12,7 @@ import {
 import {
   MainThreadExecutor,
   type MainThreadExecutorOptions,
-} from "./executor";
+} from "./main-thread-executor";
 import {
   IframeExecutor,
   type IframeExecutorOptions,
