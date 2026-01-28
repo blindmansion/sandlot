@@ -120,13 +120,19 @@ export function createBasicExecutor(
 
         // Execute with optional timeout
         if (timeout > 0) {
+          let timeoutId: ReturnType<typeof setTimeout> | undefined;
           const timeoutPromise = new Promise<never>((_, reject) => {
-            setTimeout(
+            timeoutId = setTimeout(
               () => reject(new Error(`Execution timed out after ${timeout}ms`)),
               timeout
             );
           });
-          await Promise.race([executeExport(), timeoutPromise]);
+          try {
+            await Promise.race([executeExport(), timeoutPromise]);
+          } finally {
+            // Clear the timeout to allow the process to exit
+            if (timeoutId) clearTimeout(timeoutId);
+          }
         } else {
           await executeExport();
         }
