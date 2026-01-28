@@ -4,22 +4,22 @@ import {
   type EsmTypesResolverOptions,
 } from "../core/esm-types-resolver";
 import type { Sandlot, SandlotOptions } from "../types";
-import { EsbuildWasmBundler, type EsbuildWasmBundlerOptions } from "./bundler";
+import { EsbuildNativeBundler, type EsbuildNativeBundlerOptions } from "./bundler";
 import {
   Typechecker,
   type TypecheckerOptions,
 } from "../core/typechecker";
 import {
-  MainThreadExecutor,
-  type MainThreadExecutorOptions,
+  NodeExecutor,
+  type NodeExecutorOptions,
 } from "./executor";
 
-export interface CreateBrowserSandlotOptions
+export interface CreateNodeSandlotOptions
   extends Omit<SandlotOptions, "bundler" | "typechecker" | "typesResolver" | "executor"> {
   /**
    * Custom bundler options, or a pre-configured bundler instance.
    */
-  bundler?: EsbuildWasmBundlerOptions | SandlotOptions["bundler"];
+  bundler?: EsbuildNativeBundlerOptions | SandlotOptions["bundler"];
 
   /**
    * Custom typechecker options, or a pre-configured typechecker instance.
@@ -42,59 +42,58 @@ export interface CreateBrowserSandlotOptions
   /**
    * Custom executor options, or a pre-configured executor instance.
    * Set to `false` to disable execution (sandbox.run() will throw).
-   * Defaults to MainThreadExecutor.
+   * Defaults to NodeExecutor.
    */
   executor?:
-  | MainThreadExecutorOptions
+  | NodeExecutorOptions
   | SandlotOptions["executor"]
   | false;
 }
 
 /**
- * Create a Sandlot instance pre-configured for browser environments.
+ * Create a Sandlot instance pre-configured for Node.js/Bun/Deno environments.
  *
  * This is a convenience function that sets up sensible defaults:
- * - EsbuildWasmBundler for bundling
- * - Typechecker for type checking
- * - FetchTypesResolver for npm type resolution
+ * - EsbuildNativeBundler for bundling (uses native esbuild)
+ * - Typechecker for type checking (fetches libs from CDN)
+ * - EsmTypesResolver for npm type resolution
+ * - NodeExecutor for code execution
  *
  * @example Basic usage
  * ```ts
- * const sandlot = await createBrowserSandlot();
+ * const sandlot = await createNodeSandlot();
  * const sandbox = await sandlot.createSandbox();
  * ```
  *
  * @example With shared modules
  * ```ts
- * import React from "react";
- * import ReactDOM from "react-dom/client";
+ * import express from "express";
  *
- * const sandlot = await createBrowserSandlot({
+ * const sandlot = await createNodeSandlot({
  *   sharedModules: {
- *     react: React,
- *     "react-dom/client": ReactDOM,
+ *     express,
  *   },
  * });
  * ```
  *
  * @example Disable type checking for faster builds
  * ```ts
- * const sandlot = await createBrowserSandlot({
+ * const sandlot = await createNodeSandlot({
  *   typechecker: false,
  * });
  * ```
  */
-export async function createBrowserSandlot(
-  options: CreateBrowserSandlotOptions = {}
+export async function createNodeSandlot(
+  options: CreateNodeSandlotOptions = {}
 ): Promise<Sandlot> {
   const { bundler, typechecker, typesResolver, executor, ...rest } = options;
 
   // Create or use provided bundler
   const bundlerInstance = isBundler(bundler)
     ? bundler
-    : new EsbuildWasmBundler(bundler as EsbuildWasmBundlerOptions | undefined);
+    : new EsbuildNativeBundler(bundler as EsbuildNativeBundlerOptions | undefined);
 
-  // Initialize bundler (loads WASM)
+  // Initialize bundler (loads native esbuild)
   await bundlerInstance.initialize();
 
   // Create or use provided typechecker
@@ -117,14 +116,14 @@ export async function createBrowserSandlot(
           typesResolver as EsmTypesResolverOptions | undefined
         );
 
-  // Create or use provided executor (defaults to MainThreadExecutor)
+  // Create or use provided executor (defaults to NodeExecutor)
   const executorInstance =
     executor === false
       ? undefined
       : isExecutor(executor)
         ? executor
-        : new MainThreadExecutor(
-          executor as MainThreadExecutorOptions | undefined
+        : new NodeExecutor(
+          executor as NodeExecutorOptions | undefined
         );
 
   return createSandlot({

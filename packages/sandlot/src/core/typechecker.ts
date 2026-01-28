@@ -1,12 +1,12 @@
 /**
- * Browser Typechecker - TypeScript type checking in the browser.
+ * Typechecker - TypeScript type checking.
  *
  * Uses TypeScript's compiler API
  * Fetches TypeScript lib files (lib.dom.d.ts, etc.) from CDN and caches them.
  */
 
 import ts from "typescript";
-import type { Filesystem } from "../core/fs";
+import type { Filesystem } from "./fs";
 import type {
   ITypechecker,
   TypecheckOptions,
@@ -24,7 +24,7 @@ const TS_VERSION = "5.9.3";
 /** CDN base URL for TypeScript lib files */
 const DEFAULT_CDN_BASE = `https://cdn.jsdelivr.net/npm/typescript@${TS_VERSION}/lib`;
 
-/** Default libs for browser environment */
+/** Default libs for environment */
 const DEFAULT_LIBS = ["es2020", "dom", "dom.iterable"];
 
 /** Virtual path where lib files are "located" for TypeScript */
@@ -34,10 +34,10 @@ const LIB_PATH_PREFIX = "/node_modules/typescript/lib/";
 // Types
 // =============================================================================
 
-export interface BrowserTypecheckerOptions {
+export interface TypecheckerOptions {
   /**
    * TypeScript lib names to include (e.g., "dom", "es2020").
-   * If not provided, uses sensible browser defaults: ["es2020", "dom", "dom.iterable"]
+   * If not provided, uses sensible defaults: ["es2020", "dom", "dom.iterable"]
    */
   libs?: string[];
 
@@ -356,7 +356,7 @@ function createCompilerHost(
 // =============================================================================
 
 /**
- * Get default compiler options for browser TypeScript.
+ * Get default compiler options for TypeScript.
  */
 function getDefaultCompilerOptions(): ts.CompilerOptions {
   return {
@@ -481,18 +481,18 @@ function convertDiagnostic(diag: ts.Diagnostic): Diagnostic {
 }
 
 // =============================================================================
-// BrowserTypechecker
+// Typechecker
 // =============================================================================
 
 /**
- * Browser typechecker using TypeScript compiler API.
+ * Typechecker using TypeScript compiler API.
  *
  * Fetches TypeScript lib files from CDN and caches them.
  * Uses filesystem access for efficient type checking.
  *
  * @example
  * ```ts
- * const typechecker = new BrowserTypechecker();
+ * const typechecker = new Typechecker();
  *
  * const result = await typechecker.typecheck({
  *   fs: myFilesystem,
@@ -504,12 +504,12 @@ function convertDiagnostic(diag: ts.Diagnostic): Diagnostic {
  * }
  * ```
  */
-export class BrowserTypechecker implements ITypechecker {
-  private options: BrowserTypecheckerOptions;
+export class Typechecker implements ITypechecker {
+  private options: TypecheckerOptions;
   private libCache: Map<string, string> = new Map();
   private initPromise: Promise<void> | null = null;
 
-  constructor(options: BrowserTypecheckerOptions = {}) {
+  constructor(options: TypecheckerOptions = {}) {
     this.options = options;
   }
 
@@ -598,10 +598,10 @@ export class BrowserTypechecker implements ITypechecker {
 // =============================================================================
 
 /**
- * Create a browser typechecker instance.
+ * Create a typechecker instance.
  */
-export function createBrowserTypechecker(
-  options?: BrowserTypecheckerOptions
+export function createTypechecker(
+  options?: TypecheckerOptions
 ): ITypechecker {
-  return new BrowserTypechecker(options);
+  return new Typechecker(options);
 }

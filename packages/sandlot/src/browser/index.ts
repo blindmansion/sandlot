@@ -29,18 +29,18 @@ if (typeof window !== "undefined" && typeof globalThis.process === "undefined") 
 }
 
 // -----------------------------------------------------------------------------
+// Typechecker (platform-agnostic: re-exported for convenience)
+// -----------------------------------------------------------------------------
+
+export { Typechecker, createTypechecker } from "../core/typechecker";
+export type { TypecheckerOptions } from "../core/typechecker";
+
+// -----------------------------------------------------------------------------
 // Bundler (browser-specific: uses esbuild-wasm)
 // -----------------------------------------------------------------------------
 
 export { EsbuildWasmBundler } from "./bundler";
 export type { EsbuildWasmBundlerOptions } from "./bundler";
-
-// -----------------------------------------------------------------------------
-// Typechecker (browser-specific: fetches TS libs from CDN)
-// -----------------------------------------------------------------------------
-
-export { BrowserTypechecker } from "./typechecker";
-export type { BrowserTypecheckerOptions } from "./typechecker";
 
 // -----------------------------------------------------------------------------
 // Executor (browser-specific: runs in main thread)

@@ -51,6 +51,13 @@ export {
 export type { SandboxRef } from "./commands";
 
 // -----------------------------------------------------------------------------
+// Typechecker (platform-independent, fetches TS libs from CDN)
+// -----------------------------------------------------------------------------
+
+export { Typechecker, createTypechecker } from "./core/typechecker";
+export type { TypecheckerOptions } from "./core/typechecker";
+
+// -----------------------------------------------------------------------------
 // Types Resolver (platform-independent, works anywhere with fetch)
 // -----------------------------------------------------------------------------
 

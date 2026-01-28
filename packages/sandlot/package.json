@@ -26,6 +26,11 @@
       "types": "./dist/browser/index.d.ts",
       "import": "./dist/browser/index.js",
       "default": "./dist/browser/index.js"
+    },
+    "./node": {
+      "types": "./dist/node/index.d.ts",
+      "import": "./dist/node/index.js",
+      "default": "./dist/node/index.js"
     }
   },
   "files": [
@@ -34,7 +39,7 @@
   ],
   "scripts": {
     "build": "bun run build:js && bun run build:types",
-    "build:js": "bun build ./src/index.ts ./src/browser/index.ts --outdir ./dist --format esm --packages external",
+    "build:js": "bun build ./src/index.ts ./src/browser/index.ts ./src/node/index.ts --outdir ./dist --format esm --packages external",
     "build:types": "tsc --emitDeclarationOnly",
     "prepublishOnly": "bun run build"
   },

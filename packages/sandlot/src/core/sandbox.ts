@@ -288,6 +288,9 @@ export async function createSandboxImpl(
         const packageDir = `/node_modules/${name}`;
         ensureDir(fs, packageDir);
 
+        // Determine the main types entry file
+        let typesEntry = "index.d.ts";
+
         for (const [filePath, content] of Object.entries(typeFiles)) {
           const fullPath = filePath.startsWith("/")
             ? filePath
@@ -296,9 +299,31 @@ export async function createSandboxImpl(
           ensureDir(fs, dir);
           fs.writeFile(fullPath, content);
           typeFilesCount++;
+
+          // Track the first .d.ts file as the types entry if no index.d.ts
+          const relativePath = fullPath.replace(`${packageDir}/`, "");
+          if (relativePath === "index.d.ts") {
+            typesEntry = "index.d.ts";
+          } else if (typesEntry === "index.d.ts" && relativePath.endsWith(".d.ts") && !relativePath.includes("/")) {
+            // Use the first top-level .d.ts as fallback
+            typesEntry = relativePath;
+          }
         }
 
         typesInstalled = typeFilesCount > 0;
+
+        // Create a minimal package.json for the installed package
+        // This is required for TypeScript module resolution to find the types
+        if (typesInstalled) {
+          const pkgJsonPath = `${packageDir}/package.json`;
+          const pkgJson = {
+            name,
+            version: resolvedVersion,
+            types: typesEntry,
+            main: typesEntry.replace(/\.d\.ts$/, ".js"),
+          };
+          fs.writeFile(pkgJsonPath, JSON.stringify(pkgJson, null, 2));
+        }
 
         // Try to extract version from type files or use provided
         if (!version) {

@@ -8,16 +8,20 @@ export function BashExample() {
   const [sandbox, setSandbox] = useState<Sandbox | null>(null);
 
   useEffect(() => {
-    createBrowserSandlot().then((sandlot) =>
-      sandlot.createSandbox({
-        initialFiles: {
-          "/hello.ts": `console.log("Hello from hello.ts!");`,
-          "/math.ts": "export const add = (a: number, b: number) => a + b;",
-        },
-      })
-    ).then((newSandbox) => {
-      setSandbox(newSandbox);
-    });
+    createBrowserSandlot()
+      .then((sandlot) =>
+        sandlot.createSandbox({
+          initialFiles: {
+            "/hello.ts": `console.log("Hello from hello.ts!");
+import { nanoid } from 'nanoid';
+console.log("Nanoid:", nanoid());`,
+            "/math.ts": "export const add = (a: number, b: number) => a + b;",
+          },
+        }),
+      )
+      .then((newSandbox) => {
+        setSandbox(newSandbox);
+      });
   }, []);
 
   const runCommand = async () => {
@@ -44,6 +48,7 @@ export function BashExample() {
     { label: "sandlot run", cmd: "sandlot run" },
     { label: "sandlot typecheck", cmd: "sandlot typecheck" },
     { label: "sandlot help", cmd: "sandlot help" },
+    { label: "sandlot install nanoid", cmd: "sandlot install nanoid" },
   ];
 
   return (
