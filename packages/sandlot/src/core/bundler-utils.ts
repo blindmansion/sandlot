@@ -264,7 +264,7 @@ export function createVfsPlugin(options: VfsPluginOptions): EsbuildPlugin {
 
       build.onLoad({ filter: /.*/, namespace: "vfs" }, async (args) => {
         try {
-          const contents = fs.readFile(args.path);
+          const contents = fs.readFileRaw(args.path);
           includedFiles.add(args.path);
 
           // Special handling for CSS: transform into JS that injects styles

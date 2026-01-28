@@ -612,21 +612,75 @@ export interface Sandbox {
 
   /**
    * Read a file from the virtual filesystem.
+   * Returns content with line numbers (cat -n format).
+   * Lines longer than 2000 chars are truncated.
    *
    * @param path - Absolute path to the file (e.g., "/src/app.ts")
-   * @returns File contents as a string
+   * @param options - Optional offset (0-based line number) and limit (number of lines)
+   * @returns File contents with line numbers
+   * @throws If the file does not exist
+   * 
+   * @example
+   * ```ts
+   * // Read entire file with line numbers
+   * sandbox.readFile('/src/app.ts');
+   * // Output:
+   * //      1|import React from 'react';
+   * //      2|
+   * //      3|export function App() {
+   * 
+   * // Read lines 10-19 (10 lines starting at offset 10)
+   * sandbox.readFile('/src/app.ts', { offset: 10, limit: 10 });
+   * ```
+   */
+  readFile(path: string, options?: { offset?: number; limit?: number }): string;
+
+  /**
+   * Read raw file content without line numbers.
+   * Use this when you need the actual file content for processing.
+   *
+   * @param path - Absolute path to the file (e.g., "/src/app.ts")
+   * @returns File contents as a string (no line numbers)
    * @throws If the file does not exist
    */
-  readFile(path: string): string;
+  readFileRaw(path: string): string;
 
   /**
    * Write a file to the virtual filesystem.
    * Creates parent directories automatically if they don't exist.
+   * Overwrites the entire file.
    *
    * @param path - Absolute path to the file (e.g., "/src/app.ts")
    * @param content - File contents to write
    */
   writeFile(path: string, content: string): void;
+
+  /**
+   * Edit a file using string replacement.
+   * Fails if oldString is not found or found multiple times (unless replaceAll is true).
+   *
+   * @param path - Absolute path to the file (e.g., "/src/app.ts")
+   * @param options - oldString to find, newString to replace with, optional replaceAll flag
+   * @throws If oldString is not found
+   * @throws If oldString is found multiple times and replaceAll is false
+   * 
+   * @example
+   * ```ts
+   * // Replace a single occurrence
+   * sandbox.editFile('/src/app.ts', {
+   *   oldString: 'const x = 1;',
+   *   newString: 'const x = 42;'
+   * });
+   * 
+   * // Replace all occurrences
+   * sandbox.editFile('/src/app.ts', {
+   *   oldString: 'TODO',
+   *   newString: 'DONE',
+   *   replaceAll: true
+   * });
+   * ```
+   */
+  editFile(path: string, options: { oldString: string; newString: string; replaceAll?: boolean }): void;
 
   /**
    * Subscribe to build events

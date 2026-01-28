@@ -193,7 +193,7 @@ function createCompilerHost(
         if (fs.exists(normalizedPath)) {
           const stat = fs.stat(normalizedPath);
           if (stat.isFile) {
-            const content = fs.readFile(normalizedPath);
+            const content = fs.readFileRaw(normalizedPath);
             return ts.createSourceFile(normalizedPath, content, languageVersion, true);
           }
         }
@@ -206,7 +206,7 @@ function createCompilerHost(
         if (fs.exists(fileName)) {
           const stat = fs.stat(fileName);
           if (stat.isFile) {
-            const content = fs.readFile(fileName);
+            const content = fs.readFileRaw(fileName);
             return ts.createSourceFile(fileName, content, languageVersion, true);
           }
         }
@@ -272,7 +272,7 @@ function createCompilerHost(
       // Try filesystem
       try {
         if (fs.exists(normalizedPath)) {
-          return fs.readFile(normalizedPath);
+          return fs.readFileRaw(normalizedPath);
         }
       } catch {
         // Not found
@@ -388,7 +388,7 @@ function parseTsConfig(
       return getDefaultCompilerOptions();
     }
 
-    const configText = fs.readFile(configPath);
+    const configText = fs.readFileRaw(configPath);
     const { config, error } = ts.parseConfigFileTextToJson(configPath, configText);
 
     if (error) {
@@ -403,7 +403,7 @@ function parseTsConfig(
       fileExists: (path) => fs.exists(normalizePath(path)),
       readFile: (path) => {
         try {
-          return fs.readFile(normalizePath(path));
+          return fs.readFileRaw(normalizePath(path));
         } catch {
           return undefined;
         }

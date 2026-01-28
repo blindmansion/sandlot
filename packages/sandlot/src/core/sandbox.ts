@@ -125,7 +125,7 @@ async function processTailwind(
   const contentParts: string[] = [];
   for (const filePath of includedFiles) {
     try {
-      const content = fs.readFile(filePath);
+      const content = fs.readFileRaw(filePath);
       contentParts.push(content);
     } catch {
       // File might not exist or be readable, skip it
@@ -187,7 +187,7 @@ function readPackageJson(
 ): { main?: string; dependencies?: Record<string, string> } {
   try {
     if (fs.exists(PACKAGE_JSON_PATH)) {
-      const content = fs.readFile(PACKAGE_JSON_PATH);
+      const content = fs.readFileRaw(PACKAGE_JSON_PATH);
       return JSON.parse(content);
     }
   } catch {
@@ -235,7 +235,7 @@ function getPathAliases(fs: Filesystem): Record<string, string[]> {
       return {};
     }
 
-    const content = fs.readFile(TSCONFIG_PATH);
+    const content = fs.readFileRaw(TSCONFIG_PATH);
     const tsconfig = JSON.parse(content);
     const compilerOptions = tsconfig.compilerOptions ?? {};
     const paths = compilerOptions.paths;
@@ -287,7 +287,7 @@ function saveInstalledPackages(
 
   try {
     if (fs.exists(PACKAGE_JSON_PATH)) {
-      const content = fs.readFile(PACKAGE_JSON_PATH);
+      const content = fs.readFileRaw(PACKAGE_JSON_PATH);
       existing = JSON.parse(content);
     }
   } catch {
@@ -865,7 +865,9 @@ export async function createSandboxImpl(
     run,
 
     // File operations (fs handles path normalization and parent dir creation)
-    readFile: (path: string) => fs.readFile(path),
+    readFile: (path: string, options?: { offset?: number; limit?: number }) => fs.readFile(path, options),
+    readFileRaw: (path: string) => fs.readFileRaw(path),
     writeFile: (path: string, content: string) => fs.writeFile(path, content),
+    editFile: (path: string, options: { oldString: string; newString: string; replaceAll?: boolean }) => fs.editFile(path, options),
   };
 }

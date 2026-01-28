@@ -23,6 +23,28 @@ interface ReadFileOptions {
 }
 
 /**
+ * Options for reading files with line scoping (for agent use)
+ */
+export interface ReadFileLineOptions {
+  /** Line number to start reading from (0-based). Default: 0 */
+  offset?: number;
+  /** Number of lines to read. Default: all remaining lines */
+  limit?: number;
+}
+
+/**
+ * Options for editing files using string replacement
+ */
+export interface EditFileOptions {
+  /** The text to replace */
+  oldString: string;
+  /** The text to replace it with (must be different from oldString) */
+  newString: string;
+  /** Replace all occurrences (default: false) */
+  replaceAll?: boolean;
+}
+
+/**
  * Options for writing files (matches just-bash)
  */
 interface WriteFileOptions {
@@ -186,7 +208,50 @@ export class Filesystem {
 
   // ============ IFileSystem Implementation ============
 
+  /**
+   * Read a file with optional line scoping.
+   * Returns content with line numbers (cat -n format).
+   * Lines longer than 2000 chars are truncated.
+   * 
+   * @param path - Absolute path to the file
+   * @param options - Optional offset (0-based line) and limit (line count)
+   */
   readFile(
+    path: string,
+    options?: ReadFileLineOptions
+  ): string {
+    const content = this.readFileRaw(path);
+    const lines = content.split('\n');
+    
+    const offset = options?.offset ?? 0;
+    const limit = options?.limit ?? (lines.length - offset);
+    
+    // Clamp offset and limit to valid range
+    const startLine = Math.max(0, Math.min(offset, lines.length));
+    const endLine = Math.min(startLine + limit, lines.length);
+    
+    // Slice to requested range
+    const selectedLines = lines.slice(startLine, endLine);
+    
+    // Format with line numbers (cat -n style, 1-indexed for display)
+    // Use consistent padding width based on total lines in file
+    const maxLineNum = lines.length;
+    const padWidth = Math.max(6, String(maxLineNum).length);
+    
+    return selectedLines
+      .map((line, i) => {
+        const lineNum = (startLine + i + 1).toString().padStart(padWidth, ' ');
+        const truncated = line.length > 2000 ? line.slice(0, 2000) + '...' : line;
+        return `${lineNum}|${truncated}`;
+      })
+      .join('\n');
+  }
+
+  /**
+   * Read raw file content without line numbers or formatting.
+   * This is the internal method for getting actual file content.
+   */
+  readFileRaw(
     path: string,
     options?: ReadFileOptions | BufferEncoding
   ): string {
@@ -208,6 +273,49 @@ export class Filesystem {
     // Convert Uint8Array to string
     const encoding = this.getEncoding(options) ?? "utf8";
     return this.decodeBuffer(content, encoding);
+  }
+
+  /**
+   * Edit a file using string replacement.
+   * Fails if oldString is not found or found multiple times (unless replaceAll is true).
+   * 
+   * @param path - Absolute path to the file
+   * @param options - oldString, newString, and optional replaceAll flag
+   */
+  editFile(path: string, options: EditFileOptions): void {
+    const { oldString, newString, replaceAll = false } = options;
+    
+    if (oldString === newString) {
+      throw new Error('Edit failed: oldString and newString must be different');
+    }
+    
+    if (oldString === '') {
+      throw new Error('Edit failed: oldString cannot be empty');
+    }
+    
+    const normalizedPath = this.normalizePath(path);
+    const content = this.readFileRaw(normalizedPath);
+    
+    if (!content.includes(oldString)) {
+      throw new Error(`Edit failed: oldString not found in ${path}`);
+    }
+    
+    if (!replaceAll) {
+      // Count occurrences
+      const count = content.split(oldString).length - 1;
+      if (count > 1) {
+        throw new Error(
+          `Edit failed: oldString found ${count} times in ${path}. ` +
+          `Use replaceAll: true to replace all, or provide more context to make it unique.`
+        );
+      }
+    }
+    
+    const newContent = replaceAll 
+      ? content.split(oldString).join(newString)
+      : content.replace(oldString, newString);
+    
+    this.writeFile(normalizedPath, newContent);
   }
 
   readFileBuffer(path: string): Uint8Array {
@@ -806,7 +914,7 @@ export function createFilesystem(options?: FilesystemOptions): Filesystem {
 
 export function wrapFilesystemForJustBash(fs: Filesystem): IFileSystem {
   return {
-    readFile: async (path: string, options?: ReadFileOptions | BufferEncoding): Promise<string> => fs.readFile(path, options),
+    readFile: async (path: string, options?: ReadFileOptions | BufferEncoding): Promise<string> => fs.readFileRaw(path, options),
     writeFile: async (path: string, content: FileContent, options?: WriteFileOptions | BufferEncoding): Promise<void> => fs.writeFile(path, content, options),
     appendFile: async (path: string, content: FileContent, options?: WriteFileOptions | BufferEncoding): Promise<void> => fs.appendFile(path, content, options),
     exists: async (path: string): Promise<boolean> => fs.exists(path),
