@@ -45,61 +45,32 @@ function formatBundleErrors(errors: BundleError[]): string {
 
 export function SharedModulesExample() {
   const [code, setCode] =
-    useState(`// This React component uses the SAME React instance as the host page!
-// Just export a component - the host will render it.
+    useState(`// Testing CSS import support!
+// The bundler should handle .css imports.
 
 import { useState } from 'react';
+import './styles.css';
 
 export function MyComponent() {
   const [count, setCount] = useState(0);
   
   return (
-    <div style={{ 
-      padding: '20px', 
-      background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-      borderRadius: '12px',
-      color: 'white',
-      fontFamily: 'system-ui, sans-serif',
-      textAlign: 'center'
-    }}>
-      <h3 style={{ margin: '0 0 16px 0' }}>Dynamic React Component</h3>
-      <p style={{ margin: '0 0 12px 0' }}>
-        This component was compiled and rendered using shared React!
+    <div className="css-test-container">
+      <h3 className="css-test-title">CSS Import Test</h3>
+      <p className="css-test-description">
+        If you see a green border, pink background, and styled buttons - CSS works!
       </p>
-      <div style={{ 
-        display: 'flex', 
-        alignItems: 'center', 
-        justifyContent: 'center',
-        gap: '12px'
-      }}>
+      <div className="css-test-counter">
         <button
+          className="css-test-button"
           onClick={() => setCount((c) => c - 1)}
-          style={{
-            padding: '8px 16px',
-            fontSize: '18px',
-            border: 'none',
-            borderRadius: '6px',
-            background: 'rgba(255,255,255,0.2)',
-            color: 'white',
-            cursor: 'pointer'
-          }}
         >
           -
         </button>
-        <span style={{ fontSize: '24px', fontWeight: 'bold', minWidth: '60px' }}>
-          {count}
-        </span>
+        <span className="css-test-count">{count}</span>
         <button
+          className="css-test-button"
           onClick={() => setCount((c) => c + 1)}
-          style={{
-            padding: '8px 16px',
-            fontSize: '18px',
-            border: 'none',
-            borderRadius: '6px',
-            background: 'rgba(255,255,255,0.2)',
-            color: 'white',
-            cursor: 'pointer'
-          }}
         >
           +
         </button>
@@ -162,6 +133,59 @@ export function MyComponent() {
 
       // Write the code to the sandbox
       sandbox.writeFile("/index.tsx", code);
+
+      // Write a CSS file to test CSS support
+      sandbox.writeFile("/styles.css", `
+.css-test-container {
+  padding: 20px;
+  background: linear-gradient(135deg, #ff6b9d 0%, #c44569 100%);
+  border-radius: 12px;
+  border: 4px solid #00ff88;
+  color: white;
+  font-family: system-ui, sans-serif;
+  text-align: center;
+}
+
+.css-test-title {
+  margin: 0 0 16px 0;
+  font-size: 1.5em;
+  text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+}
+
+.css-test-description {
+  margin: 0 0 12px 0;
+  font-weight: bold;
+}
+
+.css-test-counter {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.css-test-button {
+  padding: 8px 16px;
+  font-size: 18px;
+  border: 2px solid #00ff88;
+  border-radius: 6px;
+  background: rgba(0, 255, 136, 0.3);
+  color: white;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.css-test-button:hover {
+  background: rgba(0, 255, 136, 0.5);
+  transform: scale(1.1);
+}
+
+.css-test-count {
+  font-size: 24px;
+  font-weight: bold;
+  min-width: 60px;
+}
+`);
 
       // Build first to get detailed errors
       const buildResult = await sandbox.build({

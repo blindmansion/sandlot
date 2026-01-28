@@ -245,6 +245,16 @@ export function createVfsPlugin(options: VfsPluginOptions): EsbuildPlugin {
           const contents = fs.readFile(args.path);
           includedFiles.add(args.path);
 
+          // Special handling for CSS: transform into JS that injects styles
+          if (args.path.endsWith(".css")) {
+            const cssInjectionCode = generateCssInjectionCode(contents);
+            return {
+              contents: cssInjectionCode,
+              loader: "js",
+              resolveDir: dirname(args.path),
+            };
+          }
+
           return {
             contents,
             loader: getLoader(args.path),
@@ -465,7 +475,7 @@ export function resolveVfsPath(
   const resolved = resolvePath(resolveDir, importPath);
 
   // Extensions to try
-  const extensions = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".json"];
+  const extensions = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".json", ".css"];
 
   // Check if path already has an extension we recognize
   const hasExtension = extensions.some((ext) => resolved.endsWith(ext));
@@ -576,6 +586,30 @@ export function getLoader(path: string): EsbuildLoader {
     default:
       return "js";
   }
+}
+
+// =============================================================================
+// CSS Injection Code Generation
+// =============================================================================
+
+/**
+ * Generate JavaScript code that injects CSS into the document.
+ * This transforms CSS imports into runtime style injection.
+ */
+export function generateCssInjectionCode(css: string): string {
+  // Escape the CSS for embedding in a JS string
+  const escapedCss = JSON.stringify(css);
+  
+  return `
+(function() {
+  if (typeof document !== 'undefined') {
+    var style = document.createElement('style');
+    style.type = 'text/css';
+    style.textContent = ${escapedCss};
+    document.head.appendChild(style);
+  }
+})();
+`.trim();
 }
 
 // =============================================================================
