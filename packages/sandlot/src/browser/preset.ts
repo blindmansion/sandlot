@@ -17,9 +17,13 @@ import {
   IframeExecutor,
   type IframeExecutorOptions,
 } from "./iframe-executor";
+import {
+  createInMemoryPersistor,
+  type IPersistor,
+} from "../core/persistor";
 
 export interface CreateBrowserSandlotOptions
-  extends Omit<SandlotOptions, "bundler" | "typechecker" | "typesResolver" | "executor"> {
+  extends Omit<SandlotOptions, "bundler" | "typechecker" | "typesResolver" | "executor" | "persistor"> {
   /**
    * Custom bundler options, or a pre-configured bundler instance.
    */
@@ -58,6 +62,14 @@ export interface CreateBrowserSandlotOptions
   | SandlotOptions["executor"]
   | "iframe"
   | false;
+
+  /**
+   * Unified cache provider.
+   * Defaults to InMemoryPersistor if not provided.
+   * 
+   * For persistent caching across page reloads, use createIndexedDBPersistor().
+   */
+  persistor?: IPersistor;
 }
 
 /**
@@ -97,7 +109,10 @@ export interface CreateBrowserSandlotOptions
 export async function createBrowserSandlot(
   options: CreateBrowserSandlotOptions = {}
 ): Promise<Sandlot> {
-  const { bundler, typechecker, typesResolver, executor, ...rest } = options;
+  const { bundler, typechecker, typesResolver, executor, persistor, ...rest } = options;
+
+  // Use provided persistor or create default in-memory one
+  const persistorInstance = persistor ?? createInMemoryPersistor();
 
   // Create or use provided bundler
   const bundlerInstance = isBundler(bundler)
@@ -107,25 +122,27 @@ export async function createBrowserSandlot(
   // Initialize bundler (loads WASM)
   await bundlerInstance.initialize();
 
-  // Create or use provided typechecker
+  // Create or use provided typechecker (with persistor cache)
   const typecheckerInstance =
     typechecker === false
       ? undefined
       : isTypechecker(typechecker)
         ? typechecker
-        : new Typechecker(
-          typechecker as TypecheckerOptions | undefined
-        );
+        : new Typechecker({
+          cache: persistorInstance.tsLibs,
+          ...(typechecker as TypecheckerOptions | undefined),
+        });
 
-  // Create or use provided types resolver
+  // Create or use provided types resolver (with persistor cache)
   const typesResolverInstance =
     typesResolver === false
       ? undefined
       : isTypesResolver(typesResolver)
         ? typesResolver
-        : new EsmTypesResolver(
-          typesResolver as EsmTypesResolverOptions | undefined
-        );
+        : new EsmTypesResolver({
+          cache: persistorInstance.packageTypes,
+          ...(typesResolver as EsmTypesResolverOptions | undefined),
+        });
 
   // Create or use provided executor (defaults to MainThreadExecutor)
   const executorInstance =

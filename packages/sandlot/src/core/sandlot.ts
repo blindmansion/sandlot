@@ -8,6 +8,8 @@ import type {
 import { createSharedModuleRegistry } from "./shared-module-registry";
 import { createSandboxImpl, type SandboxContext } from "./sandbox";
 import { Filesystem } from "./fs";
+import { Typechecker } from "./typechecker";
+import { EsmTypesResolver } from "./esm-types-resolver";
 
 /**
  * Create a new Sandlot instance with the provided implementations.
@@ -39,12 +41,24 @@ import { Filesystem } from "./fs";
 export function createSandlot(options: SandlotOptions): Sandlot {
   const {
     bundler,
-    typechecker,
-    typesResolver,
+    typechecker: providedTypechecker,
+    typesResolver: providedTypesResolver,
     executor,
     sharedModules,
+    persistor,
     sandboxDefaults = {},
   } = options;
+
+  // Use provided components, or create new ones with persistor caching
+  const typechecker = providedTypechecker ?? (persistor
+    ? new Typechecker({ cache: persistor.tsLibs })
+    : undefined
+  );
+
+  const typesResolver = providedTypesResolver ?? (persistor
+    ? new EsmTypesResolver({ cache: persistor.packageTypes })
+    : undefined
+  );
 
   // Create shared module registry if modules were provided
   const sharedModuleRegistry = createSharedModuleRegistry(sharedModules);

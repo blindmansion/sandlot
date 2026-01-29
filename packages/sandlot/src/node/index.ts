@@ -47,3 +47,9 @@ export type { NodeExecutorOptions } from "./executor";
 
 export { createNodeSandlot } from "./preset";
 export type { CreateNodeSandlotOptions } from "./preset";
+
+// -----------------------------------------------------------------------------
+// Re-exports
+// -----------------------------------------------------------------------------
+
+export type { Sandlot, Sandbox } from "../types";

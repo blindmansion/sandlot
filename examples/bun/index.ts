@@ -278,37 +278,37 @@ export function Card() {
 
 console.log('Tailwind component defined');`
   );
-  
+
   // Build with Tailwind enabled
-  const buildResult = await sandbox.build({ 
-    entryPoint: "/tailwind-test.tsx", 
+  const buildResult = await sandbox.build({
+    entryPoint: "/tailwind-test.tsx",
     skipTypecheck: true,
     tailwind: true,
   });
-  
+
   if (!buildResult.success) {
     throw new Error(`Build failed: ${JSON.stringify(buildResult)}`);
   }
-  
+
   console.log("Build successful!");
   console.log(`Bundle size: ${(buildResult.code.length / 1024).toFixed(2)} KB`);
-  
+
   // Check if Tailwind CSS was generated (look for some expected CSS)
-  const hasBackgroundBlue = buildResult.code.includes('bg-blue-500') || 
-                            buildResult.code.includes('--tw-') ||
-                            buildResult.code.includes('background-color');
+  const hasBackgroundBlue = buildResult.code.includes('bg-blue-500') ||
+    buildResult.code.includes('--tw-') ||
+    buildResult.code.includes('background-color');
   const hasPadding = buildResult.code.includes('padding') || buildResult.code.includes('p-4');
-  const hasStyleInjection = buildResult.code.includes('createElement') && 
-                            buildResult.code.includes('style');
-  
+  const hasStyleInjection = buildResult.code.includes('createElement') &&
+    buildResult.code.includes('style');
+
   console.log("Contains Tailwind CSS markers:", hasBackgroundBlue || hasPadding);
   console.log("Contains style injection code:", hasStyleInjection);
-  
+
   // Show a snippet of the generated code (first 500 chars of CSS injection)
   const cssMatch = buildResult.code.match(/style\.textContent\s*=\s*"([^"]{0,800})/);
   if (cssMatch) {
     console.log("\nGenerated CSS preview (first 500 chars):");
-    console.log(cssMatch[1].slice(0, 500) + "...");
+    console.log(cssMatch[1]?.slice(0, 500) + "...");
   }
 });
 

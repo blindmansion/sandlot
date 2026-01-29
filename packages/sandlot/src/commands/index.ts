@@ -307,6 +307,9 @@ Aliases: sandlot add, sandlot i
       let status = `+ ${result.name}@${result.version}`;
       if (result.typesInstalled) {
         status += ` (${result.typeFilesCount} type file${result.typeFilesCount !== 1 ? "s" : ""})`;
+        if (result.requestCount !== undefined) {
+          status += ` (${result.requestCount} request${result.requestCount !== 1 ? "s" : ""})`;
+        }
         if (result.fromCache) {
           status += " [cached]";
         }

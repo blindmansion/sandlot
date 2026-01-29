@@ -494,9 +494,15 @@ export async function createSandboxImpl(
     const fromCache = false;
 
     // If typesResolver is available, use it to get type definitions
+    let requestCount: number | undefined;
     if (typesResolver) {
       try {
         const typeFiles = await typesResolver.resolveTypes(name, version);
+        
+        // Get request count if the resolver supports it
+        if ("getLastRequestCount" in typesResolver && typeof typesResolver.getLastRequestCount === "function") {
+          requestCount = typesResolver.getLastRequestCount();
+        }
 
         // Write type files to node_modules
         const packageDir = `/node_modules/${name}`;
@@ -560,6 +566,7 @@ export async function createSandboxImpl(
       typeFilesCount,
       typesError,
       fromCache,
+      requestCount,
     };
   }
 

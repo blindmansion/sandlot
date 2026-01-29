@@ -17,9 +17,13 @@ import {
   NodeExecutor,
   type NodeExecutorOptions,
 } from "./executor";
+import {
+  createInMemoryPersistor,
+  type IPersistor,
+} from "../core/persistor";
 
 export interface CreateNodeSandlotOptions
-  extends Omit<SandlotOptions, "bundler" | "typechecker" | "typesResolver" | "executor"> {
+  extends Omit<SandlotOptions, "bundler" | "typechecker" | "typesResolver" | "executor" | "persistor"> {
   /**
    * Custom bundler options, or a pre-configured bundler instance.
    *
@@ -61,6 +65,12 @@ export interface CreateNodeSandlotOptions
   | NodeExecutorOptions
   | SandlotOptions["executor"]
   | false;
+
+  /**
+   * Unified cache provider.
+   * Defaults to InMemoryPersistor if not provided.
+   */
+  persistor?: IPersistor;
 }
 
 /**
@@ -106,7 +116,10 @@ export interface CreateNodeSandlotOptions
 export async function createNodeSandlot(
   options: CreateNodeSandlotOptions = {}
 ): Promise<Sandlot> {
-  const { bundler, typechecker, typesResolver, executor, ...rest } = options;
+  const { bundler, typechecker, typesResolver, executor, persistor, ...rest } = options;
+
+  // Use provided persistor or create default in-memory one
+  const persistorInstance = persistor ?? createInMemoryPersistor();
 
   // Create or use provided bundler
   const bundlerInstance = createBundlerInstance(bundler);
@@ -114,25 +127,27 @@ export async function createNodeSandlot(
   // Initialize bundler (loads native esbuild or WASM)
   await bundlerInstance.initialize();
 
-  // Create or use provided typechecker
+  // Create or use provided typechecker (with persistor cache)
   const typecheckerInstance =
     typechecker === false
       ? undefined
       : isTypechecker(typechecker)
         ? typechecker
-        : new Typechecker(
-          typechecker as TypecheckerOptions | undefined
-        );
+        : new Typechecker({
+          cache: persistorInstance.tsLibs,
+          ...(typechecker as TypecheckerOptions | undefined),
+        });
 
-  // Create or use provided types resolver
+  // Create or use provided types resolver (with persistor cache)
   const typesResolverInstance =
     typesResolver === false
       ? undefined
       : isTypesResolver(typesResolver)
         ? typesResolver
-        : new EsmTypesResolver(
-          typesResolver as EsmTypesResolverOptions | undefined
-        );
+        : new EsmTypesResolver({
+          cache: persistorInstance.packageTypes,
+          ...(typesResolver as EsmTypesResolverOptions | undefined),
+        });
 
   // Create or use provided executor (defaults to NodeExecutor)
   const executorInstance =

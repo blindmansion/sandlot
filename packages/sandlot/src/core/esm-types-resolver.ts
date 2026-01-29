@@ -13,6 +13,7 @@
  */
 
 import type { ITypesResolver } from "../types";
+import type { ICache } from "./persistor";
 
 // =============================================================================
 // Types
@@ -44,40 +45,6 @@ export interface ResolvedTypes {
   fromTypesPackage: boolean;
 }
 
-/**
- * Cache interface for type definitions.
- * Implementations can be in-memory, IndexedDB, KV store, filesystem, etc.
- */
-export interface ITypesCache {
-  get(key: string): Promise<ResolvedTypes | null>;
-  set(key: string, value: ResolvedTypes): Promise<void>;
-  has(key: string): Promise<boolean>;
-}
-
-/**
- * Simple in-memory cache implementation.
- * Works on all platforms.
- */
-export class InMemoryTypesCache implements ITypesCache {
-  private cache = new Map<string, ResolvedTypes>();
-
-  async get(key: string): Promise<ResolvedTypes | null> {
-    return this.cache.get(key) ?? null;
-  }
-
-  async set(key: string, value: ResolvedTypes): Promise<void> {
-    this.cache.set(key, value);
-  }
-
-  async has(key: string): Promise<boolean> {
-    return this.cache.has(key);
-  }
-
-  clear(): void {
-    this.cache.clear();
-  }
-}
-
 // =============================================================================
 // EsmTypesResolver
 // =============================================================================
@@ -89,10 +56,12 @@ export interface EsmTypesResolverOptions {
   baseUrl?: string;
 
   /**
-   * External cache. If not provided, no caching is done.
+   * External cache for resolved types. If not provided, no caching is done.
    * This allows sharing cache across resolver instances.
+   * 
+   * Key format: `${packageName}@${version}` or `${packageName}@${version}/${subpath}`
    */
-  cache?: ITypesCache;
+  cache?: ICache<ResolvedTypes>;
 
   /**
    * Whether to try @types/* packages as fallback when main package
@@ -125,13 +94,21 @@ export interface EsmTypesResolverOptions {
  */
 export class EsmTypesResolver implements ITypesResolver {
   private baseUrl: string;
-  private cache: ITypesCache | null;
+  private cache: ICache<ResolvedTypes> | null;
   private tryTypesPackages: boolean;
+  private lastRequestCount: number = 0;
 
   constructor(options: EsmTypesResolverOptions = {}) {
     this.baseUrl = options.baseUrl ?? "https://esm.sh";
     this.cache = options.cache ?? null;
     this.tryTypesPackages = options.tryTypesPackages ?? true;
+  }
+
+  /**
+   * Get the number of HTTP requests made during the last resolveTypes call.
+   */
+  getLastRequestCount(): number {
+    return this.lastRequestCount;
   }
 
   /**
@@ -145,6 +122,9 @@ export class EsmTypesResolver implements ITypesResolver {
     specifier: string,
     version?: string
   ): Promise<Record<string, string>> {
+    // Reset request counter for this resolution
+    this.lastRequestCount = 0;
+    
     const resolved = await this.resolve(specifier, version);
     if (!resolved) {
       return {};
@@ -216,6 +196,7 @@ export class EsmTypesResolver implements ITypesResolver {
       const url = `${this.baseUrl}/${packageName}${versionSuffix}${pathSuffix}`;
 
       // Fetch to get headers (types URL, resolved version)
+      this.lastRequestCount++;
       const response = await fetch(url, { method: "HEAD" });
       if (!response.ok) {
         return null;
@@ -281,6 +262,9 @@ export class EsmTypesResolver implements ITypesResolver {
     while (queue.length > 0) {
       // Take a batch from the queue
       const batch = queue.splice(0, EsmTypesResolver.MAX_CONCURRENT_FETCHES);
+      
+      // Count requests for this batch
+      this.lastRequestCount += batch.length;
       
       // Fetch all files in this batch in parallel
       const results = await Promise.all(

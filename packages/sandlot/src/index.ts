@@ -62,15 +62,22 @@ export type { TypecheckerOptions } from "./core/typechecker";
 // Types Resolver (platform-independent, works anywhere with fetch)
 // -----------------------------------------------------------------------------
 
-export {
-  EsmTypesResolver,
-  InMemoryTypesCache,
-} from "./core/esm-types-resolver";
+export { EsmTypesResolver } from "./core/esm-types-resolver";
 export type {
   EsmTypesResolverOptions,
   ResolvedTypes,
-  ITypesCache,
 } from "./core/esm-types-resolver";
+
+// -----------------------------------------------------------------------------
+// Persistor (unified caching abstraction)
+// -----------------------------------------------------------------------------
+
+export {
+  InMemoryCache,
+  InMemoryPersistor,
+  createInMemoryPersistor,
+} from "./core/persistor";
+export type { ICache, IPersistor } from "./core/persistor";
 
 // -----------------------------------------------------------------------------
 // Types - Interfaces

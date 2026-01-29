@@ -57,6 +57,12 @@ export { IframeExecutor, createIframeExecutor } from "./iframe-executor";
 export type { IframeExecutorOptions } from "./iframe-executor";
 
 // -----------------------------------------------------------------------------
+// Persistor (browser-specific: IndexedDB-backed)
+// -----------------------------------------------------------------------------
+
+export { IndexedDBPersistor, createIndexedDBPersistor } from "./persistor";
+
+// -----------------------------------------------------------------------------
 // Convenience Preset
 // -----------------------------------------------------------------------------
 

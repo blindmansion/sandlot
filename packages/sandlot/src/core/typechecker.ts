@@ -13,6 +13,7 @@ import type {
   TypecheckResult,
   Diagnostic,
 } from "../types";
+import { InMemoryCache, type ICache } from "./persistor";
 
 // =============================================================================
 // Configuration
@@ -46,6 +47,14 @@ export interface TypecheckerOptions {
    * Defaults to jsDelivr CDN.
    */
   libsBaseUrl?: string;
+
+  /**
+   * Cache for TypeScript lib files.
+   * If not provided, an internal in-memory cache is used (no sharing across instances).
+   * 
+   * Key format: lib name (e.g., "dom", "es2020")
+   */
+  cache?: ICache<string>;
 }
 
 // =============================================================================
@@ -508,11 +517,14 @@ function convertDiagnostic(diag: ts.Diagnostic): Diagnostic {
  */
 export class Typechecker implements ITypechecker {
   private options: TypecheckerOptions;
-  private libCache: Map<string, string> = new Map();
+  private cache: ICache<string>;
   private initPromise: Promise<void> | null = null;
+  private initialized = false;
 
   constructor(options: TypecheckerOptions = {}) {
     this.options = options;
+    // Use provided cache or create a simple in-memory one
+    this.cache = options.cache ?? new InMemoryCache<string>();
   }
 
   /**
@@ -525,7 +537,7 @@ export class Typechecker implements ITypechecker {
       return;
     }
 
-    if (this.libCache.size > 0) {
+    if (this.initialized) {
       return; // Already initialized
     }
 
@@ -537,11 +549,22 @@ export class Typechecker implements ITypechecker {
     const libs = this.options.libs ?? DEFAULT_LIBS;
     const baseUrl = this.options.libsBaseUrl ?? DEFAULT_CDN_BASE;
 
+    // Check if first lib is already cached (implies all are cached)
+    if (libs.length > 0 && await this.cache.has(libs[0])) {
+      console.log(`[typechecker] TypeScript libs already cached`);
+      this.initialized = true;
+      return;
+    }
+
     console.log(`[typechecker] Fetching TypeScript libs: ${libs.join(", ")}...`);
     const fetched = await fetchAllLibs(libs, baseUrl);
     console.log(`[typechecker] Fetched ${fetched.size} lib files`);
 
-    this.libCache = fetched;
+    // Store in cache
+    for (const [name, content] of fetched) {
+      await this.cache.set(name, content);
+    }
+    this.initialized = true;
   }
 
   /**
@@ -570,8 +593,11 @@ export class Typechecker implements ITypechecker {
     // Parse tsconfig
     const compilerOptions = parseTsConfig(fs, tsconfigPath);
 
+    // Load libs from async cache into sync Map for compiler host
+    const libFiles = await this.loadLibsForCompiler();
+
     // Create compiler host
-    const host = createCompilerHost(fs, this.libCache, compilerOptions);
+    const host = createCompilerHost(fs, libFiles, compilerOptions);
 
     // Create program and collect diagnostics
     const program = ts.createProgram([normalizedEntry], compilerOptions, host);
@@ -592,6 +618,43 @@ export class Typechecker implements ITypechecker {
       success,
       diagnostics,
     };
+  }
+
+  /**
+   * Load all cached libs into a sync Map for the compiler host.
+   * TypeScript's compiler host requires sync access to files.
+   */
+  private async loadLibsForCompiler(): Promise<Map<string, string>> {
+    const libs = this.options.libs ?? DEFAULT_LIBS;
+    const result = new Map<string, string>();
+    const pending = new Set<string>(libs);
+    const loaded = new Set<string>();
+
+    // Load libs and follow references
+    while (pending.size > 0) {
+      const batch = Array.from(pending);
+      pending.clear();
+
+      for (const name of batch) {
+        if (loaded.has(name)) continue;
+        loaded.add(name);
+
+        const content = await this.cache.get(name);
+        if (content) {
+          result.set(name, content);
+
+          // Parse references and queue unfetched ones
+          const refs = parseLibReferences(content);
+          for (const ref of refs) {
+            if (!loaded.has(ref) && !pending.has(ref)) {
+              pending.add(ref);
+            }
+          }
+        }
+      }
+    }
+
+    return result;
   }
 }
 

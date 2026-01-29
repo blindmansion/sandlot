@@ -4,12 +4,12 @@
  * Provides utilities for creating and managing sandboxes in tests.
  */
 
-import { createNodeSandlot, type NodeSandlot, type NodeSandbox } from "sandlot/node";
+import { createNodeSandlot, type Sandlot, type Sandbox } from "sandlot/node";
 import { afterAll, beforeAll } from "bun:test";
 
 export interface TestSandbox {
-  sandlot: NodeSandlot;
-  sandbox: NodeSandbox;
+  sandlot: Sandlot;
+  sandbox: Sandbox;
 }
 
 export interface CreateTestSandboxOptions {

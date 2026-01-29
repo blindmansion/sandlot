@@ -1,5 +1,5 @@
-import type { IFileSystem, FsEntry, FsStat } from "just-bash/browser";
 import type { Filesystem } from "./core/fs";
+import type { IPersistor } from "./core/persistor";
 
 // =============================================================================
 // Re-export filesystem types for convenience
@@ -308,6 +308,13 @@ export interface SandlotOptions {
   typesResolver?: ITypesResolver;
 
   /**
+   * Unified cache provider.
+   * If provided, used to create typechecker and typesResolver with shared caching.
+   * If typechecker/typesResolver are also provided, they take precedence.
+   */
+  persistor?: IPersistor;
+
+  /**
    * Shared modules - host modules to share with sandboxed code.
    * Keys are import specifiers, values are the actual module objects.
    *
@@ -419,6 +426,8 @@ export interface InstallResult {
   fromCache?: boolean;
   /** Error message if types failed to install */
   typesError?: string;
+  /** Number of HTTP requests made to fetch types */
+  requestCount?: number;
 }
 
 export interface UninstallResult {
