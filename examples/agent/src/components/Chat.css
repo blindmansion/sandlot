@@ -30,6 +30,12 @@
   align-self: flex-start;
 }
 
+.chat-message.error {
+  background-color: #7f1d1d;
+  align-self: stretch;
+  max-width: 100%;
+}
+
 .message-role {
   font-size: 0.7rem;
   text-transform: uppercase;
