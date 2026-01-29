@@ -1,9 +1,11 @@
 {
   "name": "sandlot-monorepo",
   "private": true,
-  "workspaces": ["packages/*", "examples/*"],
+  "workspaces": ["packages/*", "examples/*", "test"],
   "scripts": {
     "typecheck": "bunx tsc --noEmit",
+    "test": "bun run --cwd test test",
+    "test:watch": "bun run --cwd test test:watch",
     "dev:vite": "bun run --cwd packages/sandlot build && bun run --cwd examples/vite dev",
     "start:bun": "bun run --cwd examples/bun start",
     "build:sandlot": "bun run --cwd packages/sandlot build",

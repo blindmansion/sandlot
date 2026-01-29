@@ -1,0 +1,24 @@
+{
+  "name": "sandlot-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "test:watch": "bun test --watch"
+  },
+  "dependencies": {
+    "sandlot": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "esbuild": "^0.27.2",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "tailwindcss": "^4.0.0"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}
