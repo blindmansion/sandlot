@@ -7,7 +7,7 @@
 
 import type * as EsbuildTypes from "esbuild-wasm";
 import type { IBundler, BundleOptions, BundleResult } from "../types";
-import { executeBundleWithEsbuild } from "../core/bundler-utils";
+import { executeBundleWithEsbuild, type EsmUrlOptions } from "../core/bundler-utils";
 
 /**
  * esbuild-wasm version - should match what's in package.json
@@ -62,6 +62,19 @@ export interface EsbuildWasmBundlerOptions {
   cdnBaseUrl?: string;
 
   /**
+   * ECMAScript target for esm.sh CDN imports.
+   * 
+   * This sets the `?target=` query parameter on esm.sh URLs to ensure
+   * consistent output. Without this, esm.sh uses User-Agent detection
+   * which can vary between environments.
+   * 
+   * @example "es2020"
+   * @example "es2022"
+   * @default "es2020"
+   */
+  esmTarget?: string;
+
+  /**
    * Whether to initialize immediately on construction.
    * If false, initialization happens lazily on first bundle() call.
    * @default false
@@ -92,6 +105,7 @@ export class EsbuildWasmBundler implements IBundler {
   constructor(options: EsbuildWasmBundlerOptions = {}) {
     this.options = {
       cdnBaseUrl: "https://esm.sh",
+      esmTarget: "es2020",
       ...options,
     };
 
@@ -201,11 +215,18 @@ export class EsbuildWasmBundler implements IBundler {
   async bundle(options: BundleOptions): Promise<BundleResult> {
     await this.initialize();
 
+    // Build esm.sh URL options
+    const esmOptions: EsmUrlOptions = {};
+    if (this.options.esmTarget) {
+      esmOptions.target = this.options.esmTarget;
+    }
+
     return executeBundleWithEsbuild({
       esbuild: this.getEsbuild(),
       bundleOptions: options,
       cdnBaseUrl: this.options.cdnBaseUrl!,
       bundleCdnImports: false, // Browser can fetch CDN imports at runtime
+      esmOptions,
     });
   }
 }

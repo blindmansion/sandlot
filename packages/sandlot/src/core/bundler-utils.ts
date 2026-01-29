@@ -155,6 +155,44 @@ export interface VfsPluginOptions {
    * @example { "@/*": ["/src/*"] }
    */
   pathAliases?: Record<string, string[]>;
+  /**
+   * Options for esm.sh CDN URL generation.
+   */
+  esmOptions?: EsmUrlOptions;
+}
+
+/**
+ * Options for esm.sh CDN URL generation.
+ * 
+ * These options are appended as query parameters to esm.sh URLs
+ * to customize how packages are resolved and bundled.
+ */
+export interface EsmUrlOptions {
+  /**
+   * Module IDs to mark as external in esm.sh.
+   * 
+   * When a package imports one of these modules, esm.sh will leave
+   * the import as-is instead of bundling it. This is useful for
+   * shared modules that are provided by the host environment.
+   * 
+   * @example ["react", "react-dom"]
+   * 
+   * Results in: https://esm.sh/swr@2.0.0?external=react,react-dom
+   */
+  external?: string[];
+
+  /**
+   * ECMAScript target for esm.sh to build for.
+   * 
+   * By default, esm.sh uses the User-Agent header to determine the target.
+   * Setting this explicitly ensures consistent output across environments.
+   * 
+   * @example "es2020"
+   * @example "es2022"
+   * 
+   * Results in: https://esm.sh/lodash@4.17.21?target=es2020
+   */
+  target?: string;
 }
 
 /**
@@ -179,7 +217,25 @@ export function createVfsPlugin(options: VfsPluginOptions): EsbuildPlugin {
     includedFiles,
     bundleCdnImports = false,
     pathAliases = {},
+    esmOptions = {},
   } = options;
+  
+  // Build esm.sh URL options:
+  // - Mark shared modules as external so esm.sh doesn't bundle them
+  // - Pass through target if specified
+  const resolvedEsmOptions: EsmUrlOptions = {
+    ...esmOptions,
+    // Combine explicit externals with shared modules
+    external: [
+      ...(esmOptions.external ?? []),
+      ...Array.from(sharedModules),
+    ],
+  };
+  
+  // Only include external if there are actual externals
+  if (resolvedEsmOptions.external?.length === 0) {
+    delete resolvedEsmOptions.external;
+  }
 
   return {
     name: "sandlot-vfs",
@@ -234,7 +290,7 @@ export function createVfsPlugin(options: VfsPluginOptions): EsbuildPlugin {
           }
 
           // Rewrite to CDN URL if package is installed
-          const cdnUrl = resolveToEsmUrl(args.path, installedPackages, cdnBaseUrl);
+          const cdnUrl = resolveToEsmUrl(args.path, installedPackages, cdnBaseUrl, resolvedEsmOptions);
           if (cdnUrl) {
             if (bundleCdnImports) {
               // Use http namespace so our onLoad handler can fetch it
@@ -342,7 +398,7 @@ export function createVfsPlugin(options: VfsPluginOptions): EsbuildPlugin {
           
           // Bare import from within an HTTP module - check if it's a known package
           // This handles cases where a CDN module imports another package
-          const cdnUrl = resolveToEsmUrl(args.path, installedPackages, cdnBaseUrl);
+          const cdnUrl = resolveToEsmUrl(args.path, installedPackages, cdnBaseUrl, resolvedEsmOptions);
           if (cdnUrl) {
             return { path: cdnUrl, namespace: "http" };
           }
@@ -503,11 +559,25 @@ export function parseImportPath(importPath: string): {
 
 /**
  * Resolve a bare import to an esm.sh CDN URL.
+ * 
+ * Supports esm.sh query parameters:
+ * - `?external=mod1,mod2` - Don't bundle these modules, leave imports as-is
+ * - `?target=es2020` - ECMAScript target for the build
+ * 
+ * For subpath imports with query params, uses esm.sh's `&` format:
+ * - `https://esm.sh/react-dom@18.3.1&external=react/client`
+ * 
+ * Note: Query parameters are skipped when version is "latest" due to an esm.sh
+ * bug that causes 500 errors for some packages when using @latest with query params.
+ * For full esm.sh feature support, use pinned versions (e.g., "react@18.3.1").
+ * 
+ * @see https://esm.sh/ for full documentation
  */
 export function resolveToEsmUrl(
   importPath: string,
   installedPackages: Record<string, string>,
-  cdnBaseUrl: string
+  cdnBaseUrl: string,
+  options?: EsmUrlOptions
 ): string | null {
   const { packageName, subpath } = parseImportPath(importPath);
 
@@ -516,8 +586,43 @@ export function resolveToEsmUrl(
     return null;
   }
 
-  const baseUrl = `${cdnBaseUrl}/${packageName}@${version}`;
-  return subpath ? `${baseUrl}/${subpath}` : baseUrl;
+  // Skip query params for "latest" version due to esm.sh bug that causes
+  // 500 errors for some packages when using @latest with any query params.
+  // This is a known esm.sh limitation - for full feature support, use pinned versions.
+  const canUseQueryParams = version !== "latest";
+  
+  // Build query params for esm.sh
+  const queryParts: string[] = [];
+  
+  if (canUseQueryParams) {
+    // Add external modules (tells esm.sh not to bundle these)
+    if (options?.external && options.external.length > 0) {
+      queryParts.push(`external=${options.external.join(",")}`);
+    }
+    
+    // Add target (explicit ES target instead of User-Agent detection)
+    if (options?.target) {
+      queryParts.push(`target=${options.target}`);
+    }
+  }
+  
+  const query = queryParts.length > 0 ? queryParts.join("&") : "";
+  
+  // Build the URL
+  // For subpaths with query params, esm.sh uses & format: pkg@ver&query/subpath
+  // For no subpath, use standard ? format: pkg@ver?query
+  if (subpath) {
+    if (query) {
+      // esm.sh format for subpath + query: pkg@version&query/subpath
+      return `${cdnBaseUrl}/${packageName}@${version}&${query}/${subpath}`;
+    }
+    return `${cdnBaseUrl}/${packageName}@${version}/${subpath}`;
+  }
+  
+  if (query) {
+    return `${cdnBaseUrl}/${packageName}@${version}?${query}`;
+  }
+  return `${cdnBaseUrl}/${packageName}@${version}`;
 }
 
 /**
@@ -757,6 +862,11 @@ export interface ExecuteBundleOptions {
    * - Node/Bun: true (bundle) - esbuild fetches during build
    */
   bundleCdnImports: boolean;
+  /**
+   * Options for esm.sh CDN URL generation.
+   * If not provided, defaults will be used (shared modules as external).
+   */
+  esmOptions?: EsmUrlOptions;
 }
 
 /**
@@ -771,7 +881,7 @@ export interface ExecuteBundleOptions {
 export async function executeBundleWithEsbuild(
   options: ExecuteBundleOptions
 ): Promise<BundleResult> {
-  const { esbuild, bundleOptions, cdnBaseUrl, bundleCdnImports } = options;
+  const { esbuild, bundleOptions, cdnBaseUrl, bundleCdnImports, esmOptions } = options;
 
   const {
     fs,
@@ -815,6 +925,7 @@ export async function executeBundleWithEsbuild(
     includedFiles,
     bundleCdnImports,
     pathAliases,
+    esmOptions,
   });
 
   try {

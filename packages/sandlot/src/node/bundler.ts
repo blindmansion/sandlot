@@ -7,7 +7,7 @@
 
 import type * as EsbuildTypes from "esbuild";
 import type { IBundler, BundleOptions, BundleResult } from "../types";
-import { executeBundleWithEsbuild } from "../core/bundler-utils";
+import { executeBundleWithEsbuild, type EsmUrlOptions } from "../core/bundler-utils";
 
 export interface EsbuildNativeBundlerOptions {
   /**
@@ -16,6 +16,19 @@ export interface EsbuildNativeBundlerOptions {
    * @default "https://esm.sh"
    */
   cdnBaseUrl?: string;
+
+  /**
+   * ECMAScript target for esm.sh CDN imports.
+   * 
+   * This sets the `?target=` query parameter on esm.sh URLs to ensure
+   * consistent output. Without this, esm.sh uses User-Agent detection
+   * which can vary between environments.
+   * 
+   * @example "es2020"
+   * @example "es2022"
+   * @default "es2020"
+   */
+  esmTarget?: string;
 }
 
 /**
@@ -41,6 +54,7 @@ export class EsbuildNativeBundler implements IBundler {
   constructor(options: EsbuildNativeBundlerOptions = {}) {
     this.options = {
       cdnBaseUrl: "https://esm.sh",
+      esmTarget: "es2020",
       ...options,
     };
   }
@@ -80,6 +94,12 @@ export class EsbuildNativeBundler implements IBundler {
   async bundle(options: BundleOptions): Promise<BundleResult> {
     await this.initialize();
 
+    // Build esm.sh URL options
+    const esmOptions: EsmUrlOptions = {};
+    if (this.options.esmTarget) {
+      esmOptions.target = this.options.esmTarget;
+    }
+
     // bundleCdnImports is true for Node/Bun because they cannot
     // resolve HTTP imports at runtime - native esbuild will fetch and bundle them
     return executeBundleWithEsbuild({
@@ -87,6 +107,7 @@ export class EsbuildNativeBundler implements IBundler {
       bundleOptions: options,
       cdnBaseUrl: this.options.cdnBaseUrl!,
       bundleCdnImports: true,
+      esmOptions,
     });
   }
 }

@@ -250,57 +250,96 @@ export class EsmTypesResolver implements ITypesResolver {
     }
   }
 
+  /** Maximum concurrent fetches to avoid overwhelming the server */
+  private static readonly MAX_CONCURRENT_FETCHES = 20;
+
   /**
-   * Fetch a .d.ts file and any files it references.
+   * Fetch a .d.ts file and any files it references via:
+   * - /// <reference path="..." /> directives
+   * - ES module imports/exports (import from "./...", export * from "./...")
+   * 
+   * Uses parallel fetching with batching for performance.
    */
   private async fetchTypesRecursively(
     entryUrl: string,
     subpath: string | undefined,
     visited = new Set<string>()
   ): Promise<Record<string, string>> {
-    if (visited.has(entryUrl)) {
-      return {};
-    }
+    const files: Record<string, string> = {};
+    
+    // Queue of files to fetch: { url, relativePath }
+    // url is used for fetching and resolving relative imports
+    // relativePath is where to store the file in the result
+    const queue: Array<{ url: string; relativePath: string }> = [];
+    
+    // Add entry point to queue
+    const entryPath = subpath ? `${subpath}.d.ts` : "index.d.ts";
+    queue.push({ url: entryUrl, relativePath: entryPath });
     visited.add(entryUrl);
 
-    const response = await fetch(entryUrl);
-    if (!response.ok) {
-      return {};
-    }
+    // Process queue in batches
+    while (queue.length > 0) {
+      // Take a batch from the queue
+      const batch = queue.splice(0, EsmTypesResolver.MAX_CONCURRENT_FETCHES);
+      
+      // Fetch all files in this batch in parallel
+      const results = await Promise.all(
+        batch.map(async ({ url, relativePath }) => {
+          try {
+            const response = await fetch(url);
+            if (!response.ok) {
+              return { url, relativePath, content: null };
+            }
+            const content = await response.text();
+            return { url, relativePath, content };
+          } catch {
+            return { url, relativePath, content: null };
+          }
+        })
+      );
 
-    const content = await response.text();
-    const files: Record<string, string> = {};
+      // Process results and queue new dependencies
+      for (const { url, relativePath, content } of results) {
+        if (content === null) continue;
 
-    // Determine the file path
-    // For main entry: "index.d.ts"
-    // For subpath "client": "client.d.ts" (or "client/index.d.ts")
-    const fileName = subpath ? `${subpath}.d.ts` : "index.d.ts";
-    files[fileName] = content;
+        // Store the file
+        const normalizedPath = relativePath.replace(/^\.\//, "");
+        files[normalizedPath] = content;
 
-    // If this is a subpath, also create the directory form
-    // e.g., react-dom/client can be imported, needs client/index.d.ts too
-    if (subpath) {
-      files[`${subpath}/index.d.ts`] = content;
-    }
+        // Parse dependencies
+        const refs = parseReferences(content);
+        const moduleImports = parseModuleImports(content);
 
-    // Parse and fetch referenced files
-    const refs = parseReferences(content);
+        // Get the directory of the current file to resolve relative paths
+        const currentDir = normalizedPath.includes("/")
+          ? normalizedPath.substring(0, normalizedPath.lastIndexOf("/"))
+          : "";
 
-    for (const ref of refs.paths) {
-      const refUrl = new URL(ref, entryUrl).href;
-      const refFiles = await this.fetchTypesRecursively(refUrl, undefined, visited);
+        // Queue reference directives - resolve relative to this file's URL
+        for (const ref of refs.paths) {
+          const refUrl = new URL(ref, url).href;
+          if (visited.has(refUrl)) continue;
+          visited.add(refUrl);
 
-      // Add referenced files with their relative paths
-      for (const [refPath, refContent] of Object.entries(refFiles)) {
-        // Compute relative path from the reference
-        const normalizedRef = ref.replace(/^\.\//, "");
-        if (refPath === "index.d.ts") {
-          files[normalizedRef] = refContent;
-        } else {
-          const dir = normalizedRef.replace(/\.d\.ts$/, "");
-          files[`${dir}/${refPath}`] = refContent;
+          const resolvedPath = resolvePath(currentDir, ref);
+          queue.push({ url: refUrl, relativePath: resolvedPath });
+        }
+
+        // Queue ES module imports - resolve relative to this file's URL
+        for (const importPath of moduleImports) {
+          const importUrl = new URL(importPath, url).href;
+          if (visited.has(importUrl)) continue;
+          visited.add(importUrl);
+
+          const resolvedPath = resolvePath(currentDir, importPath);
+          queue.push({ url: importUrl, relativePath: resolvedPath });
         }
       }
+    }
+
+    // If this is a subpath, also create the directory form
+    if (subpath && files[`${subpath}.d.ts`]) {
+      files[`${subpath}/index.d.ts`] = files[`${subpath}.d.ts`];
     }
 
     return files;
@@ -413,6 +452,55 @@ function parseReferences(content: string): { paths: string[]; types: string[] } 
 }
 
 /**
+ * Parse ES module import/export statements to find relative .d.ts dependencies.
+ * 
+ * Handles:
+ * - import { foo } from "./foo.d.ts"
+ * - import * as foo from "./foo.d.ts"
+ * - import foo from "./foo.d.ts"
+ * - export * from "./foo.d.ts"
+ * - export { foo } from "./foo.d.ts"
+ * - export type { Foo } from "./foo.d.ts"
+ * - import type { Foo } from "./foo.d.ts"
+ * 
+ * Only returns relative paths (starting with ./ or ../)
+ */
+function parseModuleImports(content: string): string[] {
+  const imports: string[] = [];
+  const seen = new Set<string>();
+  
+  // Match import/export statements with from clause
+  // Handles: import/export [type] [{ ... } | * as name | name] from "specifier"
+  const importExportRegex = /(?:import|export)\s+(?:type\s+)?(?:\*\s+as\s+\w+|[\w,{}\s*]+)\s+from\s+["']([^"']+)["']/g;
+  
+  let match;
+  while ((match = importExportRegex.exec(content)) !== null) {
+    const specifier = match[1];
+    // Only include relative paths
+    if (specifier && (specifier.startsWith("./") || specifier.startsWith("../"))) {
+      if (!seen.has(specifier)) {
+        seen.add(specifier);
+        imports.push(specifier);
+      }
+    }
+  }
+  
+  // Also handle: export * from "specifier" (simpler form without braces)
+  const exportStarRegex = /export\s+\*\s+from\s+["']([^"']+)["']/g;
+  while ((match = exportStarRegex.exec(content)) !== null) {
+    const specifier = match[1];
+    if (specifier && (specifier.startsWith("./") || specifier.startsWith("../"))) {
+      if (!seen.has(specifier)) {
+        seen.add(specifier);
+        imports.push(specifier);
+      }
+    }
+  }
+  
+  return imports;
+}
+
+/**
  * Create a cache key for a package resolution.
  */
 function makeCacheKey(
@@ -429,4 +517,34 @@ function makeCacheKey(
  */
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Resolve a relative path against a base directory.
+ * 
+ * @example
+ * resolvePath("v4/classic", "./schemas.d.ts") // "v4/classic/schemas.d.ts"
+ * resolvePath("v4/classic", "../core/index.d.ts") // "v4/core/index.d.ts"
+ * resolvePath("", "./foo.d.ts") // "foo.d.ts"
+ */
+function resolvePath(baseDir: string, relativePath: string): string {
+  // Remove leading ./
+  let path = relativePath.replace(/^\.\//, "");
+  
+  // If no ../, just join
+  if (!path.startsWith("../")) {
+    return baseDir ? `${baseDir}/${path}` : path;
+  }
+  
+  // Handle ../
+  const baseParts = baseDir ? baseDir.split("/") : [];
+  const pathParts = path.split("/");
+  
+  while (pathParts[0] === "..") {
+    pathParts.shift();
+    baseParts.pop();
+  }
+  
+  const resolved = [...baseParts, ...pathParts].join("/");
+  return resolved;
 }
