@@ -5,7 +5,9 @@
  */
 
 import { createNodeSandlot, type Sandlot, type Sandbox } from "sandlot/node";
+import type { IPersistor } from "sandlot";
 import { afterAll, beforeAll } from "bun:test";
+import { createFsPersistor } from "./fs-persistor.ts";
 
 export interface TestSandbox {
   sandlot: Sandlot;
@@ -15,7 +17,20 @@ export interface TestSandbox {
 export interface CreateTestSandboxOptions {
   /** Shared modules to inject into the sandbox */
   sharedModules?: Record<string, unknown>;
+
+  /**
+   * Custom persistor for caching.
+   * Defaults to a shared filesystem persistor at test/.cache/
+   */
+  persistor?: IPersistor;
 }
+
+/**
+ * Shared filesystem persistor used by all tests.
+ * This caches TypeScript libs and package types to disk, speeding up
+ * repeated test runs by avoiding redundant network fetches.
+ */
+const defaultPersistor = createFsPersistor();
 
 /**
  * Creates a sandlot and sandbox for testing.
@@ -26,6 +41,7 @@ export async function createTestSandbox(
 ): Promise<TestSandbox> {
   const sandlot = await createNodeSandlot({
     sharedModules: options.sharedModules,
+    persistor: options.persistor ?? defaultPersistor,
   });
   const sandbox = await sandlot.createSandbox();
   return { sandlot, sandbox };

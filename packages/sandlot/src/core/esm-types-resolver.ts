@@ -149,23 +149,14 @@ export class EsmTypesResolver implements ITypesResolver {
     version?: string
   ): Promise<ResolvedTypes | null> {
     const { packageName, subpath } = parseSpecifier(specifier);
-    const cacheKey = makeCacheKey(packageName, subpath, version);
 
-    // Check cache first
-    if (this.cache) {
-      const cached = await this.cache.get(cacheKey);
-      if (cached) {
-        return cached;
-      }
-    }
-
-    // Try to resolve types
-    let result = await this.tryResolve(packageName, subpath, version);
+    // Try to resolve types (with cache check using resolved version)
+    let result = await this.tryResolveWithCache(packageName, subpath, version);
 
     // Fallback to @types package if enabled and no types found
     if (!result && this.tryTypesPackages && !packageName.startsWith("@types/")) {
       const typesPackageName = toTypesPackageName(packageName);
-      result = await this.tryResolve(typesPackageName, subpath, version);
+      result = await this.tryResolveWithCache(typesPackageName, subpath, version);
       if (result) {
         result.fromTypesPackage = true;
         // Keep original package name for the result so caller knows what they asked for
@@ -173,8 +164,63 @@ export class EsmTypesResolver implements ITypesResolver {
       }
     }
 
+    return result;
+  }
+
+  /**
+   * Resolve types with proper cache handling.
+   * 
+   * For versioned requests: check cache immediately with that version.
+   * For unversioned requests: do a cheap HEAD request to get the resolved version,
+   * then check cache with that version before doing expensive type fetching.
+   */
+  private async tryResolveWithCache(
+    packageName: string,
+    subpath: string | undefined,
+    version: string | undefined
+  ): Promise<ResolvedTypes | null> {
+    // If version is specified, we can check cache immediately
+    if (version && this.cache) {
+      const cacheKey = makeCacheKey(packageName, subpath, version);
+      const cached = await this.cache.get(cacheKey);
+      if (cached) {
+        return cached;
+      }
+    }
+
+    // Do HEAD request to get resolved version and types URL
+    const headResult = await this.fetchPackageHead(packageName, subpath, version);
+    if (!headResult) {
+      return null;
+    }
+
+    const { resolvedVersion, typesUrl } = headResult;
+    const cacheKey = makeCacheKey(packageName, subpath, resolvedVersion);
+
+    // Check cache with resolved version (covers unversioned requests)
+    if (this.cache) {
+      const cached = await this.cache.get(cacheKey);
+      if (cached) {
+        return cached;
+      }
+    }
+
+    // Cache miss - do the expensive recursive type fetching
+    const files = await this.fetchTypesRecursively(typesUrl, subpath);
+
+    if (Object.keys(files).length === 0) {
+      return null;
+    }
+
+    const result: ResolvedTypes = {
+      packageName,
+      version: resolvedVersion,
+      files,
+      fromTypesPackage: packageName.startsWith("@types/"),
+    };
+
     // Cache the result
-    if (result && this.cache) {
+    if (this.cache) {
       await this.cache.set(cacheKey, result);
     }
 
@@ -182,30 +228,27 @@ export class EsmTypesResolver implements ITypesResolver {
   }
 
   /**
-   * Attempt to resolve types for a specific package.
+   * Lightweight HEAD request to get package metadata without fetching types.
+   * Returns the resolved version and types URL.
    */
-  private async tryResolve(
+  private async fetchPackageHead(
     packageName: string,
     subpath: string | undefined,
     version: string | undefined
-  ): Promise<ResolvedTypes | null> {
+  ): Promise<{ resolvedVersion: string; typesUrl: string } | null> {
     try {
-      // Build URL
       const versionSuffix = version ? `@${version}` : "";
       const pathSuffix = subpath ? `/${subpath}` : "";
       const url = `${this.baseUrl}/${packageName}${versionSuffix}${pathSuffix}`;
 
-      // Fetch to get headers (types URL, resolved version)
       this.lastRequestCount++;
       const response = await fetch(url, { method: "HEAD" });
       if (!response.ok) {
         return null;
       }
 
-      // Extract resolved version from URL or headers
       const resolvedVersion = this.extractVersion(response, packageName, version);
 
-      // Get types URL from header
       const typesHeader = response.headers.get("X-TypeScript-Types");
       if (!typesHeader) {
         return null;
@@ -213,19 +256,7 @@ export class EsmTypesResolver implements ITypesResolver {
 
       const typesUrl = new URL(typesHeader, response.url).href;
 
-      // Fetch the types
-      const files = await this.fetchTypesRecursively(typesUrl, subpath);
-
-      if (Object.keys(files).length === 0) {
-        return null;
-      }
-
-      return {
-        packageName,
-        version: resolvedVersion,
-        files,
-        fromTypesPackage: packageName.startsWith("@types/"),
-      };
+      return { resolvedVersion, typesUrl };
     } catch {
       return null;
     }
@@ -337,19 +368,30 @@ export class EsmTypesResolver implements ITypesResolver {
     packageName: string,
     requestedVersion: string | undefined
   ): string {
+    const versionRegex = new RegExp(`${escapeRegex(packageName)}@([^/]+)`);
+
     // Try x-esm-id header first (most reliable)
     const esmId = response.headers.get("x-esm-id");
     if (esmId) {
-      const match = esmId.match(new RegExp(`${escapeRegex(packageName)}@([^/]+)`));
+      const match = esmId.match(versionRegex);
       if (match?.[1]) {
         return match[1];
       }
     }
 
     // Try extracting from final URL
-    const urlMatch = response.url.match(new RegExp(`${escapeRegex(packageName)}@([^/]+)`));
+    const urlMatch = response.url.match(versionRegex);
     if (urlMatch?.[1]) {
       return urlMatch[1];
+    }
+
+    // Try extracting from x-typescript-types header URL
+    const typesHeader = response.headers.get("x-typescript-types");
+    if (typesHeader) {
+      const typesMatch = typesHeader.match(versionRegex);
+      if (typesMatch?.[1]) {
+        return typesMatch[1];
+      }
     }
 
     // Fall back to requested version or "latest"
@@ -486,6 +528,8 @@ function parseModuleImports(content: string): string[] {
 
 /**
  * Create a cache key for a package resolution.
+ * Format: `types:${package}@${version}` or `types:${package}@${version}/${subpath}`
+ * When version is not specified, uses `types:${package}` (for unversioned requests)
  */
 function makeCacheKey(
   packageName: string,
@@ -493,7 +537,8 @@ function makeCacheKey(
   version: string | undefined
 ): string {
   const base = version ? `${packageName}@${version}` : packageName;
-  return subpath ? `${base}/${subpath}` : base;
+  const key = subpath ? `${base}/${subpath}` : base;
+  return `types:${key}`;
 }
 
 /**

@@ -38,6 +38,7 @@ import type {
 } from "../types";
 import { Filesystem, wrapFilesystemForJustBash } from "./fs";
 import { createDefaultCommands, type SandboxRef } from "../commands";
+import type { ResolvedTypes } from "./esm-types-resolver";
 import { generateCssInjectionCode } from "./bundler-utils";
 
 // =============================================================================
@@ -497,7 +498,27 @@ export async function createSandboxImpl(
     let requestCount: number | undefined;
     if (typesResolver) {
       try {
-        const typeFiles = await typesResolver.resolveTypes(name, version);
+        // Use resolve() if available to get both types and resolved version
+        // This avoids using "latest" which can cause 500 errors on esm.sh
+        let typeFiles: Record<string, string> = {};
+        
+        if ("resolve" in typesResolver && typeof typesResolver.resolve === "function") {
+          // Use the resolve method that returns ResolvedTypes with version
+          const resolved = await typesResolver.resolve(name, version) as ResolvedTypes | null;
+          if (resolved) {
+            // Use the resolved version from the types resolver
+            resolvedVersion = resolved.version;
+            
+            // Build the type files map with proper paths
+            const pkgPath = `/node_modules/${resolved.packageName}`;
+            for (const [relativePath, content] of Object.entries(resolved.files)) {
+              typeFiles[`${pkgPath}/${relativePath}`] = content;
+            }
+          }
+        } else {
+          // Fall back to resolveTypes if resolve() is not available
+          typeFiles = await typesResolver.resolveTypes(name, version);
+        }
         
         // Get request count if the resolver supports it
         if ("getLastRequestCount" in typesResolver && typeof typesResolver.getLastRequestCount === "function") {
@@ -543,11 +564,6 @@ export async function createSandboxImpl(
             main: typesEntry.replace(/\.d\.ts$/, ".js"),
           };
           fs.writeFile(pkgJsonPath, JSON.stringify(pkgJson, null, 2));
-        }
-
-        // Try to extract version from type files or use provided
-        if (!version) {
-          resolvedVersion = "latest";
         }
       } catch (err) {
         typesError = err instanceof Error ? err.message : String(err);

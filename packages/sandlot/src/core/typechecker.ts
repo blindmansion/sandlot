@@ -31,6 +31,14 @@ const DEFAULT_LIBS = ["es2020", "dom", "dom.iterable"];
 /** Virtual path where lib files are "located" for TypeScript */
 const LIB_PATH_PREFIX = "/node_modules/typescript/lib/";
 
+/**
+ * Create a cache key for a TypeScript lib file.
+ * Format: `ts:${version}:${libName}` (e.g., "ts:5.9.3:dom")
+ */
+function libCacheKey(libName: string): string {
+  return `ts:${TS_VERSION}:${libName}`;
+}
+
 // =============================================================================
 // Types
 // =============================================================================
@@ -550,7 +558,7 @@ export class Typechecker implements ITypechecker {
     const baseUrl = this.options.libsBaseUrl ?? DEFAULT_CDN_BASE;
 
     // Check if first lib is already cached (implies all are cached)
-    if (libs.length > 0 && await this.cache.has(libs[0])) {
+    if (libs.length > 0 && await this.cache.has(libCacheKey(libs[0]))) {
       console.log(`[typechecker] TypeScript libs already cached`);
       this.initialized = true;
       return;
@@ -562,7 +570,7 @@ export class Typechecker implements ITypechecker {
 
     // Store in cache
     for (const [name, content] of fetched) {
-      await this.cache.set(name, content);
+      await this.cache.set(libCacheKey(name), content);
     }
     this.initialized = true;
   }
@@ -639,7 +647,7 @@ export class Typechecker implements ITypechecker {
         if (loaded.has(name)) continue;
         loaded.add(name);
 
-        const content = await this.cache.get(name);
+        const content = await this.cache.get(libCacheKey(name));
         if (content) {
           result.set(name, content);
 
