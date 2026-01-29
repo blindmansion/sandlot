@@ -160,6 +160,30 @@ export interface ITypesResolver {
     packageName: string,
     version?: string
   ): Promise<Record<string, string>>;
+
+  /**
+   * Resolve just the version for a package (lightweight, no type fetching).
+   * Used by install() to get the resolved version without fetching all types.
+   * Optional - if not implemented, install() will use "latest" for unversioned requests.
+   */
+  resolveVersion?(
+    packageName: string,
+    version?: string
+  ): Promise<{ packageName: string; version: string } | null>;
+
+  /**
+   * Resolve with full metadata (package name, version, files, fromTypesPackage).
+   * Optional - provides more control than resolveTypes().
+   */
+  resolve?(
+    packageName: string,
+    version?: string
+  ): Promise<{
+    packageName: string;
+    version: string;
+    files: Record<string, string>;
+    fromTypesPackage: boolean;
+  } | null>;
 }
 
 // =============================================================================
@@ -418,16 +442,8 @@ export interface InstallResult {
   name: string;
   /** Resolved version */
   version: string;
-  /** Whether type definitions were installed */
-  typesInstalled: boolean;
-  /** Number of .d.ts files written */
-  typeFilesCount: number;
-  /** Whether types came from cache */
-  fromCache?: boolean;
-  /** Error message if types failed to install */
-  typesError?: string;
-  /** Number of HTTP requests made to fetch types */
-  requestCount?: number;
+  /** Previous version (if upgrading/downgrading an existing package) */
+  previousVersion?: string;
 }
 
 export interface UninstallResult {

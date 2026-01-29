@@ -152,20 +152,26 @@ describe("filesystem persistor", () => {
   //   expect(await packageTypes.has("types:foo@1.0.0")).toBe(false);
   // });
 
-  test("caching persists package types during install", async () => {
-    // Install a real package
+  test("caching persists package types during typecheck", async () => {
+    // Install a real package (just updates package.json)
     await sandbox.exec("sandlot install nanoid");
 
-    // The types should now be cached on disk
-    // Note: The exact key format depends on the resolved version
-    const packageTypesDir = join(TEST_CACHE_DIR, "package-types");
-    const entries = existsSync(packageTypesDir)
-      ? await Bun.file(packageTypesDir).exists()
-        ? []
-        : []
-      : [];
+    // Write a simple file that imports nanoid so we have an entry point
+    sandbox.writeFile(
+      "/index.ts",
+      `import { nanoid } from 'nanoid';
+console.log(nanoid());`
+    );
 
-    // At minimum, verify the package-types directory exists
+    // Call typecheck to trigger type installation and caching
+    await sandbox.typecheck();
+
+    // The types should now be cached on disk
+    const packageTypesDir = join(TEST_CACHE_DIR, "package-types");
     expect(existsSync(packageTypesDir)).toBe(true);
+
+    // Verify nanoid types are cached (the folder should exist)
+    const nanoidDir = join(packageTypesDir, "nanoid");
+    expect(existsSync(nanoidDir)).toBe(true);
   });
 });

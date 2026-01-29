@@ -68,6 +68,7 @@ export function createSandlot(options: SandlotOptions): Sandlot {
     bundler,
     typechecker,
     typesResolver,
+    packageTypesCache: persistor?.packageTypes,
     sharedModuleRegistry,
     executor,
   };

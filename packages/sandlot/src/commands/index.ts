@@ -305,16 +305,8 @@ Aliases: sandlot add, sandlot i
       const result = await sandboxRef.install(packageSpec);
 
       let status = `+ ${result.name}@${result.version}`;
-      if (result.typesInstalled) {
-        status += ` (${result.typeFilesCount} type file${result.typeFilesCount !== 1 ? "s" : ""})`;
-        if (result.requestCount !== undefined) {
-          status += ` (${result.requestCount} request${result.requestCount !== 1 ? "s" : ""})`;
-        }
-        if (result.fromCache) {
-          status += " [cached]";
-        }
-      } else if (result.typesError) {
-        status += ` (no types: ${result.typesError})`;
+      if (result.previousVersion && result.previousVersion !== result.version) {
+        status += ` (was ${result.previousVersion})`;
       }
       results.push(status);
     } catch (err) {

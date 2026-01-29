@@ -164,6 +164,7 @@ export async function createBrowserSandlot(
     typechecker: typecheckerInstance,
     typesResolver: typesResolverInstance,
     executor: executorInstance,
+    persistor: persistorInstance,
   });
 }
 

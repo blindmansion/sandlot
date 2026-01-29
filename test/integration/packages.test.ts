@@ -78,7 +78,8 @@ console.log('debounce is function:', typeof debounce === 'function');`
   test("package with complex exports (uuid)", async () => {
     const { sandbox } = getSandbox();
 
-    await sandbox.exec("sandlot install uuid");
+    // Use specific version to avoid esm.sh transient 500 errors with unversioned requests
+    await sandbox.exec("sandlot install uuid@11.0.0");
 
     sandbox.writeFile(
       "/test-uuid.ts",

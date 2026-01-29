@@ -38,8 +38,9 @@ import type {
 } from "../types";
 import { Filesystem, wrapFilesystemForJustBash } from "./fs";
 import { createDefaultCommands, type SandboxRef } from "../commands";
-import type { ResolvedTypes } from "./esm-types-resolver";
 import { generateCssInjectionCode } from "./bundler-utils";
+import type { ICache } from "./persistor";
+import type { ResolvedTypes } from "./esm-types-resolver";
 
 // =============================================================================
 // Default Configuration
@@ -319,6 +320,246 @@ function ensureDir(fs: Filesystem, path: string): void {
   fs.mkdir(path);
 }
 
+/**
+ * Delete a directory and all its contents
+ */
+function deleteDir(fs: Filesystem, path: string): void {
+  if (!fs.exists(path)) return;
+  fs.rm(path, { recursive: true, force: true });
+}
+
+/**
+ * Write package types to the VFS.
+ * Creates the package directory, writes all type files, and creates package.json.
+ */
+function writePackageTypes(
+  fs: Filesystem,
+  packageName: string,
+  resolved: ResolvedTypes
+): void {
+  const packageDir = `/node_modules/${packageName}`;
+  ensureDir(fs, packageDir);
+
+  // Determine the main types entry file
+  let typesEntry = "index.d.ts";
+  let fallbackEntry: string | null = null;
+
+  for (const [relativePath, content] of Object.entries(resolved.files)) {
+    const fullPath = `${packageDir}/${relativePath}`;
+    const dir = fullPath.substring(0, fullPath.lastIndexOf("/"));
+    ensureDir(fs, dir);
+    fs.writeFile(fullPath, content);
+
+    // Track types entry: prefer index.d.ts, fallback to first top-level .d.ts
+    if (relativePath === "index.d.ts") {
+      typesEntry = "index.d.ts";
+    } else if (!fallbackEntry && relativePath.endsWith(".d.ts") && !relativePath.includes("/")) {
+      fallbackEntry = relativePath;
+    }
+  }
+
+  // Use index.d.ts if found, otherwise use fallback
+  const finalTypesEntry = typesEntry ?? fallbackEntry ?? "index.d.ts";
+
+  // Create package.json for TypeScript module resolution
+  const pkgJsonPath = `${packageDir}/package.json`;
+  const pkgJson = {
+    name: packageName,
+    version: resolved.version,
+    types: finalTypesEntry,
+    main: finalTypesEntry.replace(/\.d\.ts$/, ".js"),
+  };
+  fs.writeFile(pkgJsonPath, JSON.stringify(pkgJson, null, 2));
+}
+
+/**
+ * Ensure all package types are installed in /node_modules.
+ * 
+ * This function:
+ * 1. Reads dependencies from /package.json
+ * 2. Clears /node_modules
+ * 3. For each dependency:
+ *    - Checks the cache first
+ *    - If not cached, fetches via resolver and caches
+ *    - Writes type files to /node_modules/{pkg}/
+ * 4. For shared modules with subpaths (e.g., react/jsx-runtime):
+ *    - Also fetches types for the subpath and merges into package types
+ * 
+ * Called by typecheck() before type checking.
+ */
+async function ensureTypesInstalled(
+  fs: Filesystem,
+  typesResolver: ITypesResolver | undefined,
+  cache: ICache<ResolvedTypes> | undefined,
+  sharedModuleRegistry: ISharedModuleRegistry | null
+): Promise<void> {
+  const dependencies = getInstalledPackages(fs);
+  const packageNames = Object.keys(dependencies);
+
+  if (packageNames.length === 0) {
+    return;
+  }
+
+  // Clear /node_modules and recreate it
+  deleteDir(fs, "/node_modules");
+  ensureDir(fs, "/node_modules");
+
+  // Get shared module subpaths that need separate type resolution
+  // e.g., "react/jsx-runtime" -> needs types for the jsx-runtime subpath
+  const sharedSubpaths = new Map<string, Set<string>>();
+  if (sharedModuleRegistry) {
+    for (const moduleId of sharedModuleRegistry.list()) {
+      const { packageName, subpath } = parseModuleId(moduleId);
+      if (subpath && dependencies[packageName] === "shared") {
+        if (!sharedSubpaths.has(packageName)) {
+          sharedSubpaths.set(packageName, new Set());
+        }
+        sharedSubpaths.get(packageName)!.add(subpath);
+      }
+    }
+  }
+
+  // Install types for each dependency
+  for (const [name, version] of Object.entries(dependencies)) {
+    // Handle "shared" version specially - don't pass version to resolver
+    // "shared" is used for host-provided shared modules
+    const isShared = version === "shared";
+    const resolverVersion = isShared ? undefined : version;
+    const cacheKey = isShared ? `types:${name}@shared` : `types:${name}@${version}`;
+
+    // Check cache first
+    let resolved = await cache?.get(cacheKey);
+
+    // Fetch if not cached
+    if (!resolved && typesResolver) {
+      try {
+        // Use resolve() if available for full metadata
+        if (typesResolver.resolve) {
+          resolved = await typesResolver.resolve(name, resolverVersion) ?? undefined;
+        } else {
+          // Fall back to resolveTypes and construct ResolvedTypes
+          const typeFiles = await typesResolver.resolveTypes(name, resolverVersion);
+          if (Object.keys(typeFiles).length > 0) {
+            // Transform VFS paths to relative paths
+            const files: Record<string, string> = {};
+            const prefix = `/node_modules/${name}/`;
+            for (const [path, content] of Object.entries(typeFiles)) {
+              const relativePath = path.startsWith(prefix) 
+                ? path.slice(prefix.length) 
+                : path;
+              files[relativePath] = content;
+            }
+            resolved = {
+              packageName: name,
+              version: isShared ? "shared" : version,
+              files,
+              fromTypesPackage: false,
+            };
+          }
+        }
+
+        // Cache the result
+        if (resolved && cache) {
+          await cache.set(cacheKey, resolved);
+        }
+      } catch (err) {
+        // Log but don't fail - types are nice to have but not required
+        console.warn(`[sandlot] Failed to fetch types for "${name}@${version}":`, err);
+      }
+    }
+
+    // Write to VFS
+    if (resolved) {
+      writePackageTypes(fs, name, resolved);
+    }
+
+    // For shared modules, also fetch types for subpaths (e.g., react/jsx-runtime)
+    // These are stored in separate entries to avoid refetching the entire package
+    if (isShared && typesResolver) {
+      const subpaths = sharedSubpaths.get(name);
+      if (subpaths) {
+        for (const subpath of subpaths) {
+          const subpathSpecifier = `${name}/${subpath}`;
+          const subpathCacheKey = `types:${subpathSpecifier}@shared`;
+          
+          // Check cache first
+          let subpathResolved = await cache?.get(subpathCacheKey);
+          
+          // Fetch if not cached
+          if (!subpathResolved) {
+            try {
+              if (typesResolver.resolve) {
+                subpathResolved = await typesResolver.resolve(subpathSpecifier) ?? undefined;
+              } else {
+                const typeFiles = await typesResolver.resolveTypes(subpathSpecifier);
+                if (Object.keys(typeFiles).length > 0) {
+                  const files: Record<string, string> = {};
+                  const prefix = `/node_modules/${name}/`;
+                  for (const [path, content] of Object.entries(typeFiles)) {
+                    const relativePath = path.startsWith(prefix) 
+                      ? path.slice(prefix.length) 
+                      : path;
+                    files[relativePath] = content;
+                  }
+                  subpathResolved = {
+                    packageName: name,
+                    version: "shared",
+                    files,
+                    fromTypesPackage: false,
+                  };
+                }
+              }
+
+              // Cache the result
+              if (subpathResolved && cache) {
+                await cache.set(subpathCacheKey, subpathResolved);
+              }
+            } catch (err) {
+              console.warn(`[sandlot] Failed to fetch types for "${subpathSpecifier}":`, err);
+            }
+          }
+
+          // Write subpath types to VFS (merge into existing package directory)
+          if (subpathResolved) {
+            writePackageTypes(fs, name, subpathResolved);
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Parse a module ID into package name and optional subpath.
+ * e.g., "react" -> { packageName: "react", subpath: undefined }
+ * e.g., "react/jsx-runtime" -> { packageName: "react", subpath: "jsx-runtime" }
+ * e.g., "@tanstack/react-query" -> { packageName: "@tanstack/react-query", subpath: undefined }
+ * e.g., "@tanstack/react-query/devtools" -> { packageName: "@tanstack/react-query", subpath: "devtools" }
+ */
+function parseModuleId(moduleId: string): { packageName: string; subpath: string | undefined } {
+  if (moduleId.startsWith("@")) {
+    // Scoped package: @scope/name or @scope/name/subpath
+    const parts = moduleId.split("/");
+    if (parts.length >= 2) {
+      const packageName = `${parts[0]}/${parts[1]}`;
+      const subpath = parts.length > 2 ? parts.slice(2).join("/") : undefined;
+      return { packageName, subpath };
+    }
+    return { packageName: moduleId, subpath: undefined };
+  }
+
+  // Regular package: name or name/subpath
+  const slashIndex = moduleId.indexOf("/");
+  if (slashIndex === -1) {
+    return { packageName: moduleId, subpath: undefined };
+  }
+
+  return {
+    packageName: moduleId.slice(0, slashIndex),
+    subpath: moduleId.slice(slashIndex + 1),
+  };
+}
+
 // =============================================================================
 // Sandbox Context (dependencies from Sandlot)
 // =============================================================================
@@ -327,6 +568,8 @@ export interface SandboxContext {
   bundler: IBundler;
   typechecker?: ITypechecker;
   typesResolver?: ITypesResolver;
+  /** Cache for package types (used by ensureTypesInstalled) */
+  packageTypesCache?: ICache<ResolvedTypes>;
   sharedModuleRegistry: ISharedModuleRegistry | null;
   executor?: IExecutor;
 }
@@ -348,6 +591,7 @@ export async function createSandboxImpl(
     bundler,
     typechecker,
     typesResolver,
+    packageTypesCache,
     sharedModuleRegistry,
     executor,
   } = context;
@@ -396,84 +640,43 @@ export async function createSandboxImpl(
   }
 
   // ---------------------------------------------------------------------------
-  // Install types for shared modules (if both registry and resolver exist)
+  // Add shared modules to package.json (types will be installed on typecheck)
   // ---------------------------------------------------------------------------
 
-  if (sharedModuleRegistry && typesResolver) {
+  if (sharedModuleRegistry) {
     const sharedModuleIds = sharedModuleRegistry.list();
     
-    // Resolve types for all shared modules in parallel
-    const typesFetches = sharedModuleIds.map(async (moduleId) => {
-      try {
-        const typeFiles = await typesResolver.resolveTypes(moduleId);
-        return { moduleId, typeFiles, error: null };
-      } catch (err) {
-        // Log but don't fail - types are nice to have but not required
-        console.warn(`[sandlot] Failed to fetch types for shared module "${moduleId}":`, err);
-        return { moduleId, typeFiles: {}, error: err };
-      }
-    });
-
-    const results = await Promise.all(typesFetches);
-
-    // Write type files to the filesystem
-    for (const { moduleId, typeFiles } of results) {
-      if (Object.keys(typeFiles).length === 0) continue;
-
-      // Determine the package name (strip subpath for @types resolution)
-      // e.g., "react-dom/client" -> "react-dom"
-      let packageName = moduleId;
-      let subpath: string | undefined;
+    if (sharedModuleIds.length > 0) {
+      // Read current dependencies
+      const dependencies = getInstalledPackages(fs);
       
-      if (moduleId.startsWith("@")) {
-        const parts = moduleId.split("/");
-        if (parts.length >= 2) {
-          packageName = `${parts[0]}/${parts[1]}`;
-          subpath = parts.length > 2 ? parts.slice(2).join("/") : undefined;
+      // Add each shared module to dependencies
+      for (const moduleId of sharedModuleIds) {
+        // Extract package name (strip subpath)
+        // e.g., "react-dom/client" -> "react-dom"
+        let packageName = moduleId;
+        
+        if (moduleId.startsWith("@")) {
+          const parts = moduleId.split("/");
+          if (parts.length >= 2) {
+            packageName = `${parts[0]}/${parts[1]}`;
+          }
+        } else {
+          const slashIndex = moduleId.indexOf("/");
+          if (slashIndex !== -1) {
+            packageName = moduleId.slice(0, slashIndex);
+          }
         }
-      } else {
-        const slashIndex = moduleId.indexOf("/");
-        if (slashIndex !== -1) {
-          packageName = moduleId.slice(0, slashIndex);
-          subpath = moduleId.slice(slashIndex + 1);
-        }
+        
+        // Add to dependencies with "shared" version marker
+        // (ensureTypesInstalled will handle this specially)
+        // Always set to "shared" even if already present with a version -
+        // shared modules take precedence since they're provided by the host
+        dependencies[packageName] = "shared";
       }
-
-      const packageDir = `/node_modules/${packageName}`;
-      let typesEntry: string | null = null;
-      let fallbackEntry: string | null = null;
-
-      for (const [filePath, content] of Object.entries(typeFiles)) {
-        const fullPath = filePath.startsWith("/")
-          ? filePath
-          : `${packageDir}/${filePath}`;
-        const dir = fullPath.substring(0, fullPath.lastIndexOf("/"));
-        ensureDir(fs, dir);
-        fs.writeFile(fullPath, content);
-
-        // Track types entry: prefer index.d.ts, fallback to first top-level .d.ts
-        const relativePath = fullPath.replace(`${packageDir}/`, "");
-        if (relativePath === "index.d.ts") {
-          typesEntry = "index.d.ts";
-        } else if (!fallbackEntry && relativePath.endsWith(".d.ts") && !relativePath.includes("/")) {
-          fallbackEntry = relativePath;
-        }
-      }
-
-      // Use index.d.ts if found, otherwise use fallback
-      const finalTypesEntry = typesEntry ?? fallbackEntry ?? "index.d.ts";
-
-      // Create package.json if it doesn't exist yet
-      const pkgJsonPath = `${packageDir}/package.json`;
-      if (!fs.exists(pkgJsonPath)) {
-        const pkgJson = {
-          name: packageName,
-          version: "shared",
-          types: finalTypesEntry,
-          main: finalTypesEntry.replace(/\.d\.ts$/, ".js"),
-        };
-        fs.writeFile(pkgJsonPath, JSON.stringify(pkgJson, null, 2));
-      }
+      
+      // Save updated dependencies
+      saveInstalledPackages(fs, dependencies);
     }
   }
 
@@ -482,107 +685,37 @@ export async function createSandboxImpl(
   // ---------------------------------------------------------------------------
 
   /**
-   * Install a package
+   * Install a package.
+   * 
+   * This only updates /package.json with the dependency.
+   * Type definitions are fetched lazily when typecheck() is called.
    */
   async function install(packageSpec: string): Promise<InstallResult> {
     const { name, version } = parsePackageSpec(packageSpec);
 
-    // Resolve version and fetch types
-    let resolvedVersion = version ?? "latest";
-    let typesInstalled = false;
-    let typeFilesCount = 0;
-    let typesError: string | undefined;
-    const fromCache = false;
-
-    // If typesResolver is available, use it to get type definitions
-    let requestCount: number | undefined;
-    if (typesResolver) {
+    // Resolve version if not specified (lightweight HEAD request)
+    let resolvedVersion = version;
+    if (!resolvedVersion && typesResolver?.resolveVersion) {
       try {
-        // Use resolve() if available to get both types and resolved version
-        // This avoids using "latest" which can cause 500 errors on esm.sh
-        let typeFiles: Record<string, string> = {};
-        
-        if ("resolve" in typesResolver && typeof typesResolver.resolve === "function") {
-          // Use the resolve method that returns ResolvedTypes with version
-          const resolved = await typesResolver.resolve(name, version) as ResolvedTypes | null;
-          if (resolved) {
-            // Use the resolved version from the types resolver
-            resolvedVersion = resolved.version;
-            
-            // Build the type files map with proper paths
-            const pkgPath = `/node_modules/${resolved.packageName}`;
-            for (const [relativePath, content] of Object.entries(resolved.files)) {
-              typeFiles[`${pkgPath}/${relativePath}`] = content;
-            }
-          }
-        } else {
-          // Fall back to resolveTypes if resolve() is not available
-          typeFiles = await typesResolver.resolveTypes(name, version);
-        }
-        
-        // Get request count if the resolver supports it
-        if ("getLastRequestCount" in typesResolver && typeof typesResolver.getLastRequestCount === "function") {
-          requestCount = typesResolver.getLastRequestCount();
-        }
-
-        // Write type files to node_modules
-        const packageDir = `/node_modules/${name}`;
-        ensureDir(fs, packageDir);
-
-        // Determine the main types entry file
-        let typesEntry = "index.d.ts";
-
-        for (const [filePath, content] of Object.entries(typeFiles)) {
-          const fullPath = filePath.startsWith("/")
-            ? filePath
-            : `${packageDir}/${filePath}`;
-          const dir = fullPath.substring(0, fullPath.lastIndexOf("/"));
-          ensureDir(fs, dir);
-          fs.writeFile(fullPath, content);
-          typeFilesCount++;
-
-          // Track the first .d.ts file as the types entry if no index.d.ts
-          const relativePath = fullPath.replace(`${packageDir}/`, "");
-          if (relativePath === "index.d.ts") {
-            typesEntry = "index.d.ts";
-          } else if (typesEntry === "index.d.ts" && relativePath.endsWith(".d.ts") && !relativePath.includes("/")) {
-            // Use the first top-level .d.ts as fallback
-            typesEntry = relativePath;
-          }
-        }
-
-        typesInstalled = typeFilesCount > 0;
-
-        // Create a minimal package.json for the installed package
-        // This is required for TypeScript module resolution to find the types
-        if (typesInstalled) {
-          const pkgJsonPath = `${packageDir}/package.json`;
-          const pkgJson = {
-            name,
-            version: resolvedVersion,
-            types: typesEntry,
-            main: typesEntry.replace(/\.d\.ts$/, ".js"),
-          };
-          fs.writeFile(pkgJsonPath, JSON.stringify(pkgJson, null, 2));
-        }
-      } catch (err) {
-        typesError = err instanceof Error ? err.message : String(err);
+        const resolved = await typesResolver.resolveVersion(name);
+        resolvedVersion = resolved?.version ?? "latest";
+      } catch {
+        // Fall back to "latest" if version resolution fails
+        resolvedVersion = "latest";
       }
     }
+    resolvedVersion = resolvedVersion ?? "latest";
 
     // Update package.json
     const dependencies = getInstalledPackages(fs);
+    const previousVersion = dependencies[name];
     dependencies[name] = resolvedVersion;
     saveInstalledPackages(fs, dependencies);
 
     return {
       name,
       version: resolvedVersion,
-      typesInstalled,
-      typeFilesCount,
-      typesError,
-      fromCache,
-      requestCount,
+      previousVersion,
     };
   }
 
@@ -630,6 +763,9 @@ export async function createSandboxImpl(
 
     // Step 2: Type check (unless skipped or no typechecker)
     if (!skipTypecheck && typechecker) {
+      // Ensure all package types are installed before type checking
+      await ensureTypesInstalled(fs, typesResolver, packageTypesCache, sharedModuleRegistry);
+
       const typecheckResult = await typechecker.typecheck({
         fs,
         entryPoint: buildEntryPoint,
@@ -723,11 +859,18 @@ export async function createSandboxImpl(
   }
 
   /**
-   * Type check the project
+   * Type check the project.
+   * 
+   * This function:
+   * 1. Ensures all package types are installed in /node_modules (from cache or network)
+   * 2. Runs the TypeScript type checker
    */
   async function typecheck(
     typecheckOptions?: SandboxTypecheckOptions
   ): Promise<TypecheckResult> {
+    // Ensure all package types are installed before type checking
+    await ensureTypesInstalled(fs, typesResolver, packageTypesCache, sharedModuleRegistry);
+
     if (!typechecker) {
       // No typechecker configured - return success with no diagnostics
       return { success: true, diagnostics: [] };

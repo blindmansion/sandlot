@@ -611,18 +611,21 @@ export function resolveToEsmUrl(
   // Build the URL
   // For subpaths with query params, esm.sh uses & format: pkg@ver&query/subpath
   // For no subpath, use standard ? format: pkg@ver?query
+  // When version is "latest", omit the version entirely to avoid esm.sh 500 errors
+  const versionSuffix = version === "latest" ? "" : `@${version}`;
+  
   if (subpath) {
     if (query) {
       // esm.sh format for subpath + query: pkg@version&query/subpath
-      return `${cdnBaseUrl}/${packageName}@${version}&${query}/${subpath}`;
+      return `${cdnBaseUrl}/${packageName}${versionSuffix}&${query}/${subpath}`;
     }
-    return `${cdnBaseUrl}/${packageName}@${version}/${subpath}`;
+    return `${cdnBaseUrl}/${packageName}${versionSuffix}/${subpath}`;
   }
   
   if (query) {
-    return `${cdnBaseUrl}/${packageName}@${version}?${query}`;
+    return `${cdnBaseUrl}/${packageName}${versionSuffix}?${query}`;
   }
-  return `${cdnBaseUrl}/${packageName}@${version}`;
+  return `${cdnBaseUrl}/${packageName}${versionSuffix}`;
 }
 
 /**

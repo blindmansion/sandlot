@@ -4,6 +4,7 @@
 
 import { describe, test, expect } from "bun:test";
 import { withSandbox } from "../harness/index.ts";
+import type { BuildSuccess } from "sandlot";
 
 describe("tailwind CSS", () => {
   const getSandbox = withSandbox();
@@ -36,17 +37,18 @@ console.log('Tailwind component defined');`
     });
 
     expect(buildResult.success).toBe(true);
+    const buildResultSuccess = buildResult as BuildSuccess;
 
     // Check if Tailwind CSS was generated
     const hasBackgroundBlue =
-      buildResult.code.includes("bg-blue-500") ||
-      buildResult.code.includes("--tw-") ||
-      buildResult.code.includes("background-color");
+      buildResultSuccess.code.includes("bg-blue-500") ||
+      buildResultSuccess.code.includes("--tw-") ||
+      buildResultSuccess.code.includes("background-color");
     const hasPadding =
-      buildResult.code.includes("padding") || buildResult.code.includes("p-4");
+      buildResultSuccess.code.includes("padding") || buildResultSuccess.code.includes("p-4");
     const hasStyleInjection =
-      buildResult.code.includes("createElement") &&
-      buildResult.code.includes("style");
+      buildResultSuccess.code.includes("createElement") &&
+      buildResultSuccess.code.includes("style");
 
     expect(hasBackgroundBlue || hasPadding).toBe(true);
     expect(hasStyleInjection).toBe(true);
@@ -184,28 +186,29 @@ export default function App() {
     });
 
     expect(buildResult.success).toBe(true);
-    expect(buildResult.code.length).toBeGreaterThan(0);
+    const buildResultSuccess = buildResult as BuildSuccess;
+    expect(buildResultSuccess.code.length).toBeGreaterThan(0);
 
     // Check for path alias resolution
     const hasUtilsImport =
-      buildResult.code.includes("twMerge") ||
-      buildResult.code.includes("tailwind-merge");
+      buildResultSuccess.code.includes("twMerge") ||
+      buildResultSuccess.code.includes("tailwind-merge");
     expect(hasUtilsImport).toBe(true);
 
     // Check for cva
     const hasCva =
-      buildResult.code.includes("cva") ||
-      buildResult.code.includes("class-variance-authority");
+      buildResultSuccess.code.includes("cva") ||
+      buildResultSuccess.code.includes("class-variance-authority");
     expect(hasCva).toBe(true);
 
     // Check for style injection
     const hasStyleInjection =
-      buildResult.code.includes("createElement") &&
-      buildResult.code.includes("style");
+      buildResultSuccess.code.includes("createElement") &&
+      buildResultSuccess.code.includes("style");
     expect(hasStyleInjection).toBe(true);
 
     // Check for button variant strings in the bundle
-    const variantsMatch = buildResult.code.match(/bg-blue-600[^"]*text-white/);
+    const variantsMatch = buildResultSuccess.code.match(/bg-blue-600[^"]*text-white/);
     expect(variantsMatch).not.toBeNull();
   });
 });

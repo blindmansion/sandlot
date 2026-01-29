@@ -165,6 +165,7 @@ export async function createNodeSandlot(
     typechecker: typecheckerInstance,
     typesResolver: typesResolverInstance,
     executor: executorInstance,
+    persistor: persistorInstance,
   });
 }
 

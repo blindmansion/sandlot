@@ -142,6 +142,35 @@ export class EsmTypesResolver implements ITypesResolver {
   }
 
   /**
+   * Resolve just the version for a package (lightweight HEAD request).
+   * Used by install() to get the resolved version without fetching all types.
+   */
+  async resolveVersion(
+    specifier: string,
+    version?: string
+  ): Promise<{ packageName: string; version: string } | null> {
+    const { packageName, subpath } = parseSpecifier(specifier);
+
+    // Try main package first
+    let headResult = await this.fetchPackageHead(packageName, subpath, version);
+
+    // Fallback to @types package if enabled and no types found
+    if (!headResult && this.tryTypesPackages && !packageName.startsWith("@types/")) {
+      const typesPackageName = toTypesPackageName(packageName);
+      headResult = await this.fetchPackageHead(typesPackageName, subpath, version);
+    }
+
+    if (!headResult) {
+      return null;
+    }
+
+    return {
+      packageName,
+      version: headResult.resolvedVersion,
+    };
+  }
+
+  /**
    * Resolve with full metadata (useful for advanced use cases).
    */
   async resolve(
@@ -478,6 +507,28 @@ function parseReferences(content: string): { paths: string[]; types: string[] } 
 }
 
 /**
+ * Strip comments from TypeScript/JavaScript code.
+ * 
+ * Removes:
+ * - Multi-line comments (including JSDoc)
+ * - Single-line comments
+ * 
+ * This is important for parseModuleImports to avoid matching import statements
+ * that appear in documentation examples within comments.
+ */
+function stripComments(content: string): string {
+  // Remove multi-line comments (including JSDoc)
+  // This handles nested asterisks in JSDoc like /** ... */
+  let result = content.replace(/\/\*[\s\S]*?\*\//g, "");
+  
+  // Remove single-line comments
+  // Be careful not to remove URLs (https://) by requiring whitespace or line start before //
+  result = result.replace(/(?:^|[^:])\/\/.*$/gm, "");
+  
+  return result;
+}
+
+/**
  * Parse ES module import/export statements to find relative .d.ts dependencies.
  * 
  * Handles:
@@ -490,17 +541,24 @@ function parseReferences(content: string): { paths: string[]; types: string[] } 
  * - import type { Foo } from "./foo.d.ts"
  * 
  * Only returns relative paths (starting with ./ or ../)
+ * 
+ * NOTE: Comments are stripped first to avoid matching imports in documentation
+ * examples (e.g., JSDoc @example blocks contain code samples that should not
+ * be followed as actual dependencies).
  */
 function parseModuleImports(content: string): string[] {
   const imports: string[] = [];
   const seen = new Set<string>();
+  
+  // Strip comments to avoid matching imports in JSDoc examples
+  const strippedContent = stripComments(content);
   
   // Match import/export statements with from clause
   // Handles: import/export [type] [{ ... } | * as name | name] from "specifier"
   const importExportRegex = /(?:import|export)\s+(?:type\s+)?(?:\*\s+as\s+\w+|[\w,{}\s*]+)\s+from\s+["']([^"']+)["']/g;
   
   let match;
-  while ((match = importExportRegex.exec(content)) !== null) {
+  while ((match = importExportRegex.exec(strippedContent)) !== null) {
     const specifier = match[1];
     // Only include relative paths
     if (specifier && (specifier.startsWith("./") || specifier.startsWith("../"))) {
@@ -513,7 +571,7 @@ function parseModuleImports(content: string): string[] {
   
   // Also handle: export * from "specifier" (simpler form without braces)
   const exportStarRegex = /export\s+\*\s+from\s+["']([^"']+)["']/g;
-  while ((match = exportStarRegex.exec(content)) !== null) {
+  while ((match = exportStarRegex.exec(strippedContent)) !== null) {
     const specifier = match[1];
     if (specifier && (specifier.startsWith("./") || specifier.startsWith("../"))) {
       if (!seen.has(specifier)) {
