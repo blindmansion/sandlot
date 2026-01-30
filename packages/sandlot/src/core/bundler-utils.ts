@@ -396,6 +396,14 @@ export function createVfsPlugin(options: VfsPluginOptions): EsbuildPlugin {
             return { path: resolved, namespace: "http" };
           }
           
+          // Check if this is a shared module FIRST
+          // This is critical for packages like zustand that import 'react' -
+          // we need to redirect them to our shared module registry, not the CDN
+          const sharedMatch = matchSharedModule(args.path, sharedModules);
+          if (sharedMatch) {
+            return { path: sharedMatch, namespace: "sandlot-shared" };
+          }
+          
           // Bare import from within an HTTP module - check if it's a known package
           // This handles cases where a CDN module imports another package
           const cdnUrl = resolveToEsmUrl(args.path, installedPackages, cdnBaseUrl, resolvedEsmOptions);

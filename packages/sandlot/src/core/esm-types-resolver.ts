@@ -364,6 +364,10 @@ export class EsmTypesResolver implements ITypesResolver {
   ): Promise<Record<string, string>> {
     const files: Record<string, string> = {};
     
+    // Extract the package name from the entry URL to filter dependencies
+    // Only follow absolute URLs that are for the same package
+    const expectedPackage = extractPackageFromEsmUrl(entryUrl);
+    
     // Queue of files to fetch: { url, relativePath }
     // url is used for fetching and resolving relative imports
     // relativePath is where to store the file in the result
@@ -402,18 +406,23 @@ export class EsmTypesResolver implements ITypesResolver {
       for (const { url, relativePath, content } of results) {
         if (content === null) continue;
 
-        // Store the file
+        // Store the file with rewritten imports
         const normalizedPath = relativePath.replace(/^\.\//, "");
-        files[normalizedPath] = content;
-
-        // Parse dependencies
-        const refs = parseReferences(content);
-        const moduleImports = parseModuleImports(content);
-
-        // Get the directory of the current file to resolve relative paths
+        
+        // Get the directory of the current file for computing relative paths
         const currentDir = normalizedPath.includes("/")
           ? normalizedPath.substring(0, normalizedPath.lastIndexOf("/"))
           : "";
+        
+        // Rewrite absolute esm.sh URLs to relative paths in the content
+        // This is needed because TypeScript expects relative imports
+        // Only rewrite URLs from the same package
+        const rewrittenContent = rewriteEsmUrlsToRelative(content, currentDir, expectedPackage);
+        files[normalizedPath] = rewrittenContent;
+
+        // Parse dependencies (use original content before rewriting for URL extraction)
+        const refs = parseReferences(content);
+        const { relativePaths, absoluteUrls } = parseModuleImports(content);
 
         // Queue reference directives - resolve relative to this file's URL
         for (const ref of refs.paths) {
@@ -425,8 +434,8 @@ export class EsmTypesResolver implements ITypesResolver {
           queue.push({ url: refUrl, relativePath: resolvedPath });
         }
 
-        // Queue ES module imports - resolve relative to this file's URL
-        for (const importPath of moduleImports) {
+        // Queue relative ES module imports - resolve relative to this file's URL
+        for (const importPath of relativePaths) {
           const importUrl = new URL(importPath, url).href;
           if (visited.has(importUrl)) continue;
           visited.add(importUrl);
@@ -434,12 +443,43 @@ export class EsmTypesResolver implements ITypesResolver {
           const resolvedPath = resolvePath(currentDir, importPath);
           queue.push({ url: importUrl, relativePath: resolvedPath });
         }
+
+        // Queue absolute esm.sh URLs - extract relative path from URL
+        // esm.sh sometimes rewrites relative imports to absolute URLs
+        // Only follow URLs from the same package (ignore external deps like csstype)
+        for (const absoluteUrl of absoluteUrls) {
+          if (visited.has(absoluteUrl)) continue;
+          visited.add(absoluteUrl);
+
+          const extractedPath = extractRelativePathFromEsmUrl(absoluteUrl, expectedPackage ?? undefined);
+          if (extractedPath) {
+            queue.push({ url: absoluteUrl, relativePath: extractedPath });
+          }
+        }
       }
     }
 
     // If this is a subpath, also create the directory form
-    if (subpath && files[`${subpath}.d.ts`]) {
-      files[`${subpath}/index.d.ts`] = files[`${subpath}.d.ts`];
+    // Check both .d.ts and .d.mts extensions
+    if (subpath) {
+      if (files[`${subpath}.d.ts`]) {
+        files[`${subpath}/index.d.ts`] = files[`${subpath}.d.ts`];
+      } else if (files[`${subpath}.d.mts`]) {
+        files[`${subpath}/index.d.ts`] = files[`${subpath}.d.mts`];
+      }
+    }
+    
+    // Also create directory forms for any top-level .d.mts files
+    // This allows TypeScript to resolve subpath imports like "zustand/vanilla"
+    for (const [path, content] of Object.entries(files)) {
+      if (path.endsWith(".d.mts") && !path.includes("/")) {
+        // e.g., "vanilla.d.mts" -> "vanilla/index.d.ts"
+        const baseName = path.slice(0, -6); // Remove ".d.mts"
+        const dirPath = `${baseName}/index.d.ts`;
+        if (!files[dirPath]) {
+          files[dirPath] = content;
+        }
+      }
     }
 
     return files;
@@ -585,7 +625,17 @@ function stripComments(content: string): string {
 }
 
 /**
- * Parse ES module import/export statements to find relative .d.ts dependencies.
+ * Result of parsing module imports.
+ */
+interface ParsedImports {
+  /** Relative paths (./..., ../...) */
+  relativePaths: string[];
+  /** Absolute esm.sh URLs (https://esm.sh/...) */
+  absoluteUrls: string[];
+}
+
+/**
+ * Parse ES module import/export statements to find .d.ts dependencies.
  * 
  * Handles:
  * - import { foo } from "./foo.d.ts"
@@ -596,14 +646,17 @@ function stripComments(content: string): string {
  * - export type { Foo } from "./foo.d.ts"
  * - import type { Foo } from "./foo.d.ts"
  * 
- * Only returns relative paths (starting with ./ or ../)
+ * Returns both:
+ * - Relative paths (starting with ./ or ../)
+ * - Absolute esm.sh URLs (esm.sh sometimes rewrites relative paths to absolute URLs)
  * 
  * NOTE: Comments are stripped first to avoid matching imports in documentation
  * examples (e.g., JSDoc @example blocks contain code samples that should not
  * be followed as actual dependencies).
  */
-function parseModuleImports(content: string): string[] {
-  const imports: string[] = [];
+function parseModuleImports(content: string): ParsedImports {
+  const relativePaths: string[] = [];
+  const absoluteUrls: string[] = [];
   const seen = new Set<string>();
   
   // Strip comments to avoid matching imports in JSDoc examples
@@ -616,12 +669,13 @@ function parseModuleImports(content: string): string[] {
   let match;
   while ((match = importExportRegex.exec(strippedContent)) !== null) {
     const specifier = match[1];
-    // Only include relative paths
-    if (specifier && (specifier.startsWith("./") || specifier.startsWith("../"))) {
-      if (!seen.has(specifier)) {
-        seen.add(specifier);
-        imports.push(specifier);
-      }
+    if (!specifier || seen.has(specifier)) continue;
+    seen.add(specifier);
+    
+    if (specifier.startsWith("./") || specifier.startsWith("../")) {
+      relativePaths.push(specifier);
+    } else if (specifier.startsWith("https://esm.sh/")) {
+      absoluteUrls.push(specifier);
     }
   }
   
@@ -629,15 +683,190 @@ function parseModuleImports(content: string): string[] {
   const exportStarRegex = /export\s+\*\s+from\s+["']([^"']+)["']/g;
   while ((match = exportStarRegex.exec(strippedContent)) !== null) {
     const specifier = match[1];
-    if (specifier && (specifier.startsWith("./") || specifier.startsWith("../"))) {
-      if (!seen.has(specifier)) {
-        seen.add(specifier);
-        imports.push(specifier);
-      }
+    if (!specifier || seen.has(specifier)) continue;
+    seen.add(specifier);
+    
+    if (specifier.startsWith("./") || specifier.startsWith("../")) {
+      relativePaths.push(specifier);
+    } else if (specifier.startsWith("https://esm.sh/")) {
+      absoluteUrls.push(specifier);
     }
   }
   
-  return imports;
+  return { relativePaths, absoluteUrls };
+}
+
+/**
+ * Extract the package name from an esm.sh URL.
+ * 
+ * @example
+ * extractPackageFromEsmUrl("https://esm.sh/zustand@5.0.10/esm/vanilla.d.mts")
+ * // returns "zustand"
+ * 
+ * extractPackageFromEsmUrl("https://esm.sh/@types/react@19.2.9/index.d.ts")
+ * // returns "@types/react"
+ */
+function extractPackageFromEsmUrl(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    const pathname = parsed.pathname;
+    const parts = pathname.split("/").filter(Boolean);
+    
+    if (parts.length === 0) return null;
+    
+    // Handle scoped packages (@scope/name)
+    if (parts[0].startsWith("@")) {
+      if (parts.length < 2) return null;
+      // Extract package name without version
+      const scopedName = `${parts[0]}/${parts[1].split("@")[0]}`;
+      return scopedName;
+    }
+    
+    // Regular package - extract name without version
+    return parts[0].split("@")[0];
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Extract a relative file path from an esm.sh URL.
+ * Only returns a path if the URL is for the expected package.
+ * 
+ * @example
+ * extractRelativePathFromEsmUrl("https://esm.sh/zustand@5.0.10/esm/vanilla.d.mts", "zustand")
+ * // returns "vanilla.d.mts"
+ * 
+ * extractRelativePathFromEsmUrl("https://esm.sh/csstype@3.2.3/index.d.ts", "zustand")
+ * // returns null (different package)
+ */
+function extractRelativePathFromEsmUrl(url: string, expectedPackage?: string): string | null {
+  try {
+    const parsed = new URL(url);
+    const pathname = parsed.pathname;
+    
+    // Pattern: /{package}@{version}/{target}/{path}
+    // e.g., /zustand@5.0.10/esm/vanilla.d.mts
+    // We want to extract the path after the target directory (esm, esnext, etc.)
+    
+    // Split by / and find the file path portion
+    const parts = pathname.split("/").filter(Boolean);
+    
+    if (parts.length === 0) return null;
+    
+    // Check if the URL is for the expected package
+    if (expectedPackage) {
+      const urlPackage = extractPackageFromEsmUrl(url);
+      if (urlPackage !== expectedPackage) {
+        // This URL is for a different package - don't follow it
+        return null;
+      }
+    }
+    
+    // Find the package@version part (contains @)
+    let startIndex = 0;
+    for (let i = 0; i < parts.length; i++) {
+      if (parts[i].includes("@")) {
+        startIndex = i + 1;
+        break;
+      }
+    }
+    
+    // Skip the target directory (esm, esnext, es2022, etc.)
+    if (startIndex < parts.length) {
+      const possibleTarget = parts[startIndex];
+      if (["esm", "esnext", "es2022", "es2020", "es2015", "deno", "denonext"].includes(possibleTarget)) {
+        startIndex++;
+      }
+    }
+    
+    // Join the remaining parts as the relative path
+    const relativeParts = parts.slice(startIndex);
+    if (relativeParts.length === 0) {
+      return null;
+    }
+    
+    return relativeParts.join("/");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Rewrite absolute esm.sh URLs in content to relative paths.
+ * 
+ * This is needed because esm.sh sometimes rewrites relative imports to absolute URLs
+ * in type definition files, but TypeScript expects relative imports to resolve
+ * within the local filesystem.
+ * 
+ * Only rewrites URLs that are from the expected package. URLs from other packages
+ * (like csstype) are left as-is since they won't be resolved locally anyway.
+ * 
+ * @example
+ * // Original content:
+ * export * from 'https://esm.sh/zustand@5.0.10/esm/vanilla.d.mts';
+ * 
+ * // After rewriting (from root directory):
+ * export * from './vanilla.d.mts';
+ * 
+ * // After rewriting (from subdirectory "middleware"):
+ * export * from '../vanilla.d.mts';
+ */
+function rewriteEsmUrlsToRelative(content: string, currentDir: string, expectedPackage?: string | null): string {
+  // Match esm.sh URLs in import/export statements
+  const urlPattern = /(['"])(https:\/\/esm\.sh\/[^'"]+)(['"])/g;
+  
+  return content.replace(urlPattern, (match, quote1, url, quote2) => {
+    const extractedPath = extractRelativePathFromEsmUrl(url, expectedPackage ?? undefined);
+    if (!extractedPath) {
+      return match; // Keep original if we can't extract or different package
+    }
+    
+    // Compute relative path from currentDir to extractedPath
+    const relativePath = computeRelativePath(currentDir, extractedPath);
+    return `${quote1}${relativePath}${quote2}`;
+  });
+}
+
+/**
+ * Compute a relative path from one directory to a target file.
+ * 
+ * @example
+ * computeRelativePath("", "vanilla.d.mts") // "./vanilla.d.mts"
+ * computeRelativePath("middleware", "vanilla.d.mts") // "../vanilla.d.mts"
+ * computeRelativePath("", "middleware/immer.d.mts") // "./middleware/immer.d.mts"
+ */
+function computeRelativePath(fromDir: string, toPath: string): string {
+  if (!fromDir) {
+    return "./" + toPath;
+  }
+  
+  const fromParts = fromDir.split("/").filter(Boolean);
+  const toParts = toPath.split("/").filter(Boolean);
+  
+  // Find common prefix
+  let commonLength = 0;
+  const minLength = Math.min(fromParts.length, toParts.length - 1); // -1 because last part is filename
+  for (let i = 0; i < minLength; i++) {
+    if (fromParts[i] === toParts[i]) {
+      commonLength++;
+    } else {
+      break;
+    }
+  }
+  
+  // Go up from fromDir to common ancestor
+  const upCount = fromParts.length - commonLength;
+  const upParts = Array(upCount).fill("..");
+  
+  // Go down from common ancestor to target
+  const downParts = toParts.slice(commonLength);
+  
+  if (upParts.length === 0) {
+    return "./" + downParts.join("/");
+  }
+  
+  return [...upParts, ...downParts].join("/");
 }
 
 /**

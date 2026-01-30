@@ -221,11 +221,20 @@ export class EsbuildWasmBundler implements IBundler {
       esmOptions.target = this.options.esmTarget;
     }
 
+    // Determine whether to bundle CDN imports:
+    // - If there are shared modules, we MUST bundle CDN imports so that
+    //   our bundler can intercept imports to shared modules (like 'react')
+    //   from within CDN packages (like zustand).
+    // - Without this, esm.sh returns code with bare imports like
+    //   `import ... from 'react'` which browsers can't resolve.
+    const hasSharedModules = (options.sharedModules?.length ?? 0) > 0;
+    const bundleCdnImports = hasSharedModules;
+
     return executeBundleWithEsbuild({
       esbuild: this.getEsbuild(),
       bundleOptions: options,
       cdnBaseUrl: this.options.cdnBaseUrl!,
-      bundleCdnImports: false, // Browser can fetch CDN imports at runtime
+      bundleCdnImports,
       esmOptions,
     });
   }
