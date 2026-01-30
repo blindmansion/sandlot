@@ -273,12 +273,21 @@ export class EsmTypesResolver implements ITypesResolver {
    * Lightweight HEAD request to get package metadata without fetching types.
    * Returns the resolved version and types URL.
    * Includes retry logic for transient errors (5xx, network issues).
+   * 
+   * For @types/* packages, uses unpkg instead of esm.sh since esm.sh
+   * cannot serve pure TypeScript definition packages (they have no JS).
    */
   private async fetchPackageHead(
     packageName: string,
     subpath: string | undefined,
     version: string | undefined
   ): Promise<{ resolvedVersion: string; typesUrl: string } | null> {
+    // @types/* packages need special handling - esm.sh can't serve them
+    // because they're pure .d.ts files with no JavaScript
+    if (packageName.startsWith("@types/")) {
+      return this.fetchTypesPackageHead(packageName, subpath, version);
+    }
+
     // Don't add @latest to URLs - esm.sh resolves to latest with bare URLs,
     // and @latest can trigger npm registry lookups that hit rate limits
     const versionSuffix = version && version !== "latest" ? `@${version}` : "";
@@ -310,6 +319,74 @@ export class EsmTypesResolver implements ITypesResolver {
 
         const typesUrl = new URL(typesHeader, response.url).href;
 
+        return { resolvedVersion, typesUrl };
+      } catch {
+        // Retry on network errors
+        if (attempt < EsmTypesResolver.MAX_RETRIES) {
+          const delay = EsmTypesResolver.RETRY_BASE_DELAY_MS * Math.pow(2, attempt);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
+        return null;
+      }
+    }
+    
+    return null;
+  }
+
+  /**
+   * Fetch package metadata for @types/* packages using jsdelivr.
+   * These packages can't be served by esm.sh (they're pure .d.ts files).
+   * We use jsdelivr because it has proper CORS support for browser environments.
+   */
+  private async fetchTypesPackageHead(
+    packageName: string,
+    subpath: string | undefined,
+    version: string | undefined
+  ): Promise<{ resolvedVersion: string; typesUrl: string } | null> {
+    // Use jsdelivr for CORS-friendly access to npm packages
+    // jsdelivr URL format: https://cdn.jsdelivr.net/npm/package@version/file
+    const versionSuffix = version && version !== "latest" ? `@${version}` : "";
+    const packageJsonUrl = `https://cdn.jsdelivr.net/npm/${packageName}${versionSuffix}/package.json`;
+
+    for (let attempt = 0; attempt <= EsmTypesResolver.MAX_RETRIES; attempt++) {
+      try {
+        this.lastRequestCount++;
+        const response = await fetch(packageJsonUrl);
+        
+        // Retry on 5xx errors
+        if (response.status >= 500 && attempt < EsmTypesResolver.MAX_RETRIES) {
+          const delay = EsmTypesResolver.RETRY_BASE_DELAY_MS * Math.pow(2, attempt);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
+        
+        if (!response.ok) {
+          return null;
+        }
+
+        const pkgJson = await response.json() as { 
+          version?: string;
+          types?: string;
+          typings?: string;
+          main?: string;
+        };
+        
+        const resolvedVersion = pkgJson.version ?? version ?? "latest";
+        
+        // Determine the types entry point
+        let typesEntry = subpath 
+          ? (subpath.endsWith(".d.ts") ? subpath : `${subpath}.d.ts`)
+          : (pkgJson.types ?? pkgJson.typings ?? "index.d.ts");
+        
+        // Normalize the path
+        if (typesEntry.startsWith("./")) {
+          typesEntry = typesEntry.slice(2);
+        }
+        
+        // Use jsdelivr for the types URL as well (CORS-friendly)
+        const typesUrl = `https://cdn.jsdelivr.net/npm/${packageName}@${resolvedVersion}/${typesEntry}`;
+        
         return { resolvedVersion, typesUrl };
       } catch {
         // Retry on network errors
