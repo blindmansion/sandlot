@@ -256,43 +256,99 @@ export class EsmTypesResolver implements ITypesResolver {
     return result;
   }
 
+  /** Maximum retry attempts for transient errors (npm rate limits can be persistent) */
+  private static readonly MAX_RETRIES = 4;
+  
+  /** Base delay for exponential backoff (ms) - higher for npm rate limiting */
+  private static readonly RETRY_BASE_DELAY_MS = 1000;
+
   /**
    * Lightweight HEAD request to get package metadata without fetching types.
    * Returns the resolved version and types URL.
+   * Includes retry logic for transient errors (5xx, network issues).
    */
   private async fetchPackageHead(
     packageName: string,
     subpath: string | undefined,
     version: string | undefined
   ): Promise<{ resolvedVersion: string; typesUrl: string } | null> {
-    try {
-      const versionSuffix = version ? `@${version}` : "";
-      const pathSuffix = subpath ? `/${subpath}` : "";
-      const url = `${this.baseUrl}/${packageName}${versionSuffix}${pathSuffix}`;
+    // Don't add @latest to URLs - esm.sh resolves to latest with bare URLs,
+    // and @latest can trigger npm registry lookups that hit rate limits
+    const versionSuffix = version && version !== "latest" ? `@${version}` : "";
+    const pathSuffix = subpath ? `/${subpath}` : "";
+    const url = `${this.baseUrl}/${packageName}${versionSuffix}${pathSuffix}`;
 
-      this.lastRequestCount++;
-      const response = await fetch(url, { method: "HEAD" });
-      if (!response.ok) {
+    for (let attempt = 0; attempt <= EsmTypesResolver.MAX_RETRIES; attempt++) {
+      try {
+        this.lastRequestCount++;
+        const response = await fetch(url, { method: "HEAD" });
+        
+        // Retry on 5xx errors (server errors, rate limiting)
+        if (response.status >= 500 && attempt < EsmTypesResolver.MAX_RETRIES) {
+          const delay = EsmTypesResolver.RETRY_BASE_DELAY_MS * Math.pow(2, attempt);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
+        
+        if (!response.ok) {
+          return null;
+        }
+
+        const resolvedVersion = this.extractVersion(response, packageName, version);
+
+        const typesHeader = response.headers.get("X-TypeScript-Types");
+        if (!typesHeader) {
+          return null;
+        }
+
+        const typesUrl = new URL(typesHeader, response.url).href;
+
+        return { resolvedVersion, typesUrl };
+      } catch {
+        // Retry on network errors
+        if (attempt < EsmTypesResolver.MAX_RETRIES) {
+          const delay = EsmTypesResolver.RETRY_BASE_DELAY_MS * Math.pow(2, attempt);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
         return null;
       }
-
-      const resolvedVersion = this.extractVersion(response, packageName, version);
-
-      const typesHeader = response.headers.get("X-TypeScript-Types");
-      if (!typesHeader) {
-        return null;
-      }
-
-      const typesUrl = new URL(typesHeader, response.url).href;
-
-      return { resolvedVersion, typesUrl };
-    } catch {
-      return null;
     }
+    
+    return null;
   }
 
   /** Maximum concurrent fetches to avoid overwhelming the server */
   private static readonly MAX_CONCURRENT_FETCHES = 20;
+
+  /**
+   * Fetch a URL with retry logic for transient errors.
+   */
+  private async fetchWithRetry(url: string): Promise<Response | null> {
+    for (let attempt = 0; attempt <= EsmTypesResolver.MAX_RETRIES; attempt++) {
+      try {
+        const response = await fetch(url);
+        
+        // Retry on 5xx errors (server errors, rate limiting)
+        if (response.status >= 500 && attempt < EsmTypesResolver.MAX_RETRIES) {
+          const delay = EsmTypesResolver.RETRY_BASE_DELAY_MS * Math.pow(2, attempt);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
+        
+        return response;
+      } catch {
+        // Retry on network errors
+        if (attempt < EsmTypesResolver.MAX_RETRIES) {
+          const delay = EsmTypesResolver.RETRY_BASE_DELAY_MS * Math.pow(2, attempt);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
+        return null;
+      }
+    }
+    return null;
+  }
 
   /**
    * Fetch a .d.ts file and any files it references via:
@@ -326,14 +382,14 @@ export class EsmTypesResolver implements ITypesResolver {
       // Count requests for this batch
       this.lastRequestCount += batch.length;
       
-      // Fetch all files in this batch in parallel
+      // Fetch all files in this batch in parallel (with retry logic)
       const results = await Promise.all(
         batch.map(async ({ url, relativePath }) => {
+          const response = await this.fetchWithRetry(url);
+          if (!response || !response.ok) {
+            return { url, relativePath, content: null };
+          }
           try {
-            const response = await fetch(url);
-            if (!response.ok) {
-              return { url, relativePath, content: null };
-            }
             const content = await response.text();
             return { url, relativePath, content };
           } catch {
