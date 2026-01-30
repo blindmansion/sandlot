@@ -417,31 +417,55 @@ export function createVfsPlugin(options: VfsPluginOptions): EsbuildPlugin {
           return { path: fallbackUrl, namespace: "http" };
         });
 
-        // Load HTTP modules by fetching them
+        // Load HTTP modules by fetching them with retry for transient errors
         build.onLoad({ filter: /.*/, namespace: "http" }, async (args) => {
-          try {
-            const response = await fetch(args.path);
-            if (!response.ok) {
+          const maxRetries = 3;
+          const baseDelayMs = 500;
+          
+          for (let attempt = 0; attempt <= maxRetries; attempt++) {
+            try {
+              const response = await fetch(args.path);
+              
+              // Retry on 5xx errors (server errors, rate limiting)
+              if (response.status >= 500 && attempt < maxRetries) {
+                const delay = baseDelayMs * Math.pow(2, attempt);
+                await new Promise(resolve => setTimeout(resolve, delay));
+                continue;
+              }
+              
+              if (!response.ok) {
+                return {
+                  errors: [{ text: `Failed to fetch ${args.path}: ${response.status} ${response.statusText}` }],
+                };
+              }
+
+              const contents = await response.text();
+              
+              // Determine loader from URL
+              const loader = getLoaderFromUrl(args.path);
+
               return {
-                errors: [{ text: `Failed to fetch ${args.path}: ${response.status} ${response.statusText}` }],
+                contents,
+                loader,
+                // Don't set resolveDir - we'll handle resolution via namespace
+              };
+            } catch (err) {
+              // Retry on network errors
+              if (attempt < maxRetries) {
+                const delay = baseDelayMs * Math.pow(2, attempt);
+                await new Promise(resolve => setTimeout(resolve, delay));
+                continue;
+              }
+              return {
+                errors: [{ text: `Failed to fetch ${args.path}: ${err}` }],
               };
             }
-
-            const contents = await response.text();
-            
-            // Determine loader from URL
-            const loader = getLoaderFromUrl(args.path);
-
-            return {
-              contents,
-              loader,
-              // Don't set resolveDir - we'll handle resolution via namespace
-            };
-          } catch (err) {
-            return {
-              errors: [{ text: `Failed to fetch ${args.path}: ${err}` }],
-            };
           }
+          
+          // Should not reach here, but return error if we do
+          return {
+            errors: [{ text: `Failed to fetch ${args.path} after ${maxRetries + 1} attempts` }],
+          };
         });
       }
     },

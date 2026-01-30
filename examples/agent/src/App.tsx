@@ -3,7 +3,7 @@ import React from "react";
 import * as jsxRuntime from "react/jsx-runtime";
 import ReactDOM from "react-dom/client";
 import { Group, Panel, Separator } from "react-resizable-panels";
-import { createBrowserSandlot } from "sandlot/browser";
+import { createBrowserSandlot, createIndexedDBPersistor } from "sandlot/browser";
 import type { Sandbox, BuildSuccess } from "sandlot";
 import { Chat } from "./components/Chat";
 import "./App.css";
@@ -152,7 +152,7 @@ function Preview({ buildResult }: { buildResult: BuildSuccess | null }) {
           srcDoc={iframeSrcDoc}
           className="preview-iframe"
           title="Preview"
-          sandbox="allow-scripts allow-same-origin allow-forms"
+          sandbox="allow-scripts allow-same-origin allow-forms allow-modals"
           style={{
             display: buildResult && !error ? "block" : "none",
           }}
@@ -174,7 +174,12 @@ function App() {
 
     async function init() {
       try {
+        // Use IndexedDB persistor for caching TypeScript libs and package types
+        // This persists across page reloads, speeding up subsequent loads
+        const persistor = await createIndexedDBPersistor();
+        
         const sandlot = await createBrowserSandlot({
+          persistor,
           sharedModules: {
             react: React,
             "react/jsx-runtime": jsxRuntime,
