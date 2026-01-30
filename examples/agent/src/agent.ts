@@ -73,7 +73,9 @@ export function MyComponent() {
 sandlot build --tailwind
 \`\`\`
 
-The component will appear in the preview panel with Tailwind styles applied.`;
+The component will appear in the preview panel with Tailwind styles applied.
+
+IMPORTANT NOTE: The sandlot environment is under active development, particularly when it comes to typescript type resolution for certain packages. If you encounter a ts issue that looks odd, and not like a real issue, don't try to fix it, just tell the user what happened.`;
 
 /**
  * Create tools that give the AI access to the sandbox

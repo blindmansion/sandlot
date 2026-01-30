@@ -419,11 +419,28 @@ async function ensureTypesInstalled(
     }
   }
 
-  // Install types for each dependency
+  // Work queue of packages to install types for
+  // Format: { name, version, isShared }
+  const workQueue: Array<{ name: string; version: string; isShared: boolean }> = [];
+  const processedPackages = new Set<string>();
+
+  // Add initial dependencies to work queue
   for (const [name, version] of Object.entries(dependencies)) {
-    // Handle "shared" version specially - don't pass version to resolver
-    // "shared" is used for host-provided shared modules
     const isShared = version === "shared";
+    workQueue.push({ name, version, isShared });
+  }
+
+  // Process work queue (including peer type dependencies)
+  while (workQueue.length > 0) {
+    const { name, version, isShared } = workQueue.shift()!;
+    
+    // Skip if already processed (avoid infinite loops)
+    const processKey = `${name}@${version}`;
+    if (processedPackages.has(processKey)) {
+      continue;
+    }
+    processedPackages.add(processKey);
+
     const resolverVersion = isShared ? undefined : version;
     const cacheKey = isShared ? `types:${name}@shared` : `types:${name}@${version}`;
 
@@ -471,6 +488,20 @@ async function ensureTypesInstalled(
     // Write to VFS
     if (resolved) {
       writePackageTypes(fs, name, resolved);
+      
+      // Add peer type dependencies to work queue
+      if (resolved.peerTypeDeps && resolved.peerTypeDeps.length > 0) {
+        for (const peerDep of resolved.peerTypeDeps) {
+          const peerKey = `${peerDep.packageName}@${peerDep.version}`;
+          if (!processedPackages.has(peerKey)) {
+            workQueue.push({
+              name: peerDep.packageName,
+              version: peerDep.version,
+              isShared: false,
+            });
+          }
+        }
+      }
     }
 
     // For shared modules, also fetch types for subpaths (e.g., react/jsx-runtime)

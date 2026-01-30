@@ -43,6 +43,12 @@ export interface ResolvedTypes {
    * Whether types came from @types/* package
    */
   fromTypesPackage: boolean;
+
+  /**
+   * Peer type dependencies detected from `export * from 'external-package'` statements.
+   * These packages should also have their types installed for complete type resolution.
+   */
+  peerTypeDeps?: Array<{ packageName: string; version: string }>;
 }
 
 // =============================================================================
@@ -235,7 +241,7 @@ export class EsmTypesResolver implements ITypesResolver {
     }
 
     // Cache miss - do the expensive recursive type fetching
-    const files = await this.fetchTypesRecursively(typesUrl, subpath);
+    const { files, peerTypeDeps } = await this.fetchTypesRecursively(typesUrl, subpath);
 
     if (Object.keys(files).length === 0) {
       return null;
@@ -246,6 +252,7 @@ export class EsmTypesResolver implements ITypesResolver {
       version: resolvedVersion,
       files,
       fromTypesPackage: packageName.startsWith("@types/"),
+      peerTypeDeps: peerTypeDeps.length > 0 ? peerTypeDeps : undefined,
     };
 
     // Cache the result
@@ -356,13 +363,20 @@ export class EsmTypesResolver implements ITypesResolver {
    * - ES module imports/exports (import from "./...", export * from "./...")
    * 
    * Uses parallel fetching with batching for performance.
+   * 
+   * Also detects external package dependencies (export * from 'other-package')
+   * and returns them as peer type dependencies.
    */
   private async fetchTypesRecursively(
     entryUrl: string,
     subpath: string | undefined,
     visited = new Set<string>()
-  ): Promise<Record<string, string>> {
+  ): Promise<{
+    files: Record<string, string>;
+    peerTypeDeps: Array<{ packageName: string; version: string }>;
+  }> {
     const files: Record<string, string> = {};
+    const peerTypeDepsMap = new Map<string, { packageName: string; version: string }>();
     
     // Extract the package name from the entry URL to filter dependencies
     // Only follow absolute URLs that are for the same package
@@ -446,14 +460,25 @@ export class EsmTypesResolver implements ITypesResolver {
 
         // Queue absolute esm.sh URLs - extract relative path from URL
         // esm.sh sometimes rewrites relative imports to absolute URLs
-        // Only follow URLs from the same package (ignore external deps like csstype)
+        // Only follow URLs from the same package
+        // External packages are collected as peer type dependencies
         for (const absoluteUrl of absoluteUrls) {
           if (visited.has(absoluteUrl)) continue;
           visited.add(absoluteUrl);
 
           const extractedPath = extractRelativePathFromEsmUrl(absoluteUrl, expectedPackage ?? undefined);
           if (extractedPath) {
+            // Same package - follow the import
             queue.push({ url: absoluteUrl, relativePath: extractedPath });
+          } else {
+            // Different package - collect as peer type dependency
+            const packageInfo = extractPackageInfoFromEsmUrl(absoluteUrl);
+            if (packageInfo && packageInfo.packageName !== expectedPackage) {
+              const key = `${packageInfo.packageName}@${packageInfo.version}`;
+              if (!peerTypeDepsMap.has(key)) {
+                peerTypeDepsMap.set(key, packageInfo);
+              }
+            }
           }
         }
       }
@@ -482,7 +507,10 @@ export class EsmTypesResolver implements ITypesResolver {
       }
     }
 
-    return files;
+    return {
+      files,
+      peerTypeDeps: Array.from(peerTypeDepsMap.values()),
+    };
   }
 
   /**
@@ -577,6 +605,34 @@ function toTypesPackageName(packageName: string): string {
     return "@types/" + packageName.slice(1).replace("/", "__");
   }
   return `@types/${packageName}`;
+}
+
+/**
+ * Convert a @types/* package name back to its original package name.
+ * This is used when rewriting imports from esm.sh URLs.
+ * 
+ * @example
+ * fromTypesPackageName("@types/react") // "react"
+ * fromTypesPackageName("@types/node") // "node"
+ * fromTypesPackageName("@types/tanstack__react-query") // "@tanstack/react-query"
+ * fromTypesPackageName("lodash") // "lodash" (unchanged if not a @types package)
+ */
+function fromTypesPackageName(packageName: string): string {
+  if (!packageName.startsWith("@types/")) {
+    return packageName;
+  }
+  
+  const typesName = packageName.slice(7); // Remove "@types/"
+  
+  // Check if it's a scoped package (contains __)
+  if (typesName.includes("__")) {
+    // @types/scope__name -> @scope/name
+    const [scope, ...nameParts] = typesName.split("__");
+    return `@${scope}/${nameParts.join("__")}`;
+  }
+  
+  // Simple package: @types/react -> react
+  return typesName;
 }
 
 /**
@@ -697,6 +753,53 @@ function parseModuleImports(content: string): ParsedImports {
 }
 
 /**
+ * Extract package name and version from an esm.sh URL.
+ * 
+ * @example
+ * extractPackageInfoFromEsmUrl("https://esm.sh/zustand@5.0.10/esm/vanilla.d.mts")
+ * // returns { packageName: "zustand", version: "5.0.10" }
+ * 
+ * extractPackageInfoFromEsmUrl("https://esm.sh/@tanstack/query-core@5.90.20/build/modern/index.d.ts")
+ * // returns { packageName: "@tanstack/query-core", version: "5.90.20" }
+ */
+function extractPackageInfoFromEsmUrl(url: string): { packageName: string; version: string } | null {
+  try {
+    const parsed = new URL(url);
+    const pathname = parsed.pathname;
+    const parts = pathname.split("/").filter(Boolean);
+    
+    if (parts.length === 0) return null;
+    
+    // Handle scoped packages (@scope/name@version)
+    if (parts[0].startsWith("@")) {
+      if (parts.length < 2) return null;
+      // Extract package name and version
+      const nameWithVersion = parts[1];
+      const atIndex = nameWithVersion.lastIndexOf("@");
+      if (atIndex === -1) {
+        // No version in URL
+        return { packageName: `${parts[0]}/${nameWithVersion}`, version: "latest" };
+      }
+      const name = nameWithVersion.slice(0, atIndex);
+      const version = nameWithVersion.slice(atIndex + 1);
+      return { packageName: `${parts[0]}/${name}`, version };
+    }
+    
+    // Regular package (name@version)
+    const nameWithVersion = parts[0];
+    const atIndex = nameWithVersion.lastIndexOf("@");
+    if (atIndex === -1) {
+      return { packageName: nameWithVersion, version: "latest" };
+    }
+    const name = nameWithVersion.slice(0, atIndex);
+    const version = nameWithVersion.slice(atIndex + 1);
+    return { packageName: name, version };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Extract the package name from an esm.sh URL.
  * 
  * @example
@@ -707,26 +810,8 @@ function parseModuleImports(content: string): ParsedImports {
  * // returns "@types/react"
  */
 function extractPackageFromEsmUrl(url: string): string | null {
-  try {
-    const parsed = new URL(url);
-    const pathname = parsed.pathname;
-    const parts = pathname.split("/").filter(Boolean);
-    
-    if (parts.length === 0) return null;
-    
-    // Handle scoped packages (@scope/name)
-    if (parts[0].startsWith("@")) {
-      if (parts.length < 2) return null;
-      // Extract package name without version
-      const scopedName = `${parts[0]}/${parts[1].split("@")[0]}`;
-      return scopedName;
-    }
-    
-    // Regular package - extract name without version
-    return parts[0].split("@")[0];
-  } catch {
-    return null;
-  }
+  const info = extractPackageInfoFromEsmUrl(url);
+  return info?.packageName ?? null;
 }
 
 /**
@@ -818,13 +903,24 @@ function rewriteEsmUrlsToRelative(content: string, currentDir: string, expectedP
   
   return content.replace(urlPattern, (match, quote1, url, quote2) => {
     const extractedPath = extractRelativePathFromEsmUrl(url, expectedPackage ?? undefined);
-    if (!extractedPath) {
-      return match; // Keep original if we can't extract or different package
+    if (extractedPath) {
+      // Same package - rewrite to relative path
+      const relativePath = computeRelativePath(currentDir, extractedPath);
+      return `${quote1}${relativePath}${quote2}`;
     }
     
-    // Compute relative path from currentDir to extractedPath
-    const relativePath = computeRelativePath(currentDir, extractedPath);
-    return `${quote1}${relativePath}${quote2}`;
+    // Different package - rewrite to bare package specifier
+    // This allows TypeScript to resolve it from node_modules
+    const packageInfo = extractPackageInfoFromEsmUrl(url);
+    if (packageInfo && packageInfo.packageName !== expectedPackage) {
+      // External package - rewrite to bare package name
+      // Special case: @types/foo should be rewritten to foo
+      // because @types packages provide types FOR the original package
+      const resolvedPackageName = fromTypesPackageName(packageInfo.packageName);
+      return `${quote1}${resolvedPackageName}${quote2}`;
+    }
+    
+    return match; // Keep original if we can't extract
   });
 }
 

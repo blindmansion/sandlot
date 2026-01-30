@@ -122,6 +122,7 @@ interface PackageTypesMeta {
   packageName: string;
   version: string;
   fromTypesPackage: boolean;
+  peerTypeDeps?: Array<{ packageName: string; version: string }>;
 }
 
 /**
@@ -184,6 +185,7 @@ class PackageTypesCache implements ICache<ResolvedTypes> {
         version: meta.version,
         files,
         fromTypesPackage: meta.fromTypesPackage,
+        peerTypeDeps: meta.peerTypeDeps,
       };
     } catch {
       return null;
@@ -228,6 +230,7 @@ class PackageTypesCache implements ICache<ResolvedTypes> {
       packageName: value.packageName,
       version: value.version,
       fromTypesPackage: value.fromTypesPackage,
+      peerTypeDeps: value.peerTypeDeps,
     };
     await Bun.write(join(packageDir, "meta.json"), JSON.stringify(meta, null, 2));
 
