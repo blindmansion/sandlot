@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "smoke": "bun test/smoke.ts",
+    "smoke:browser": "bun test/browser/serve.ts",
     "profile:typecheck": "bun test/profile-typecheck.ts",
     "profile:typecheck:react": "PROFILE_FIXTURE=react-app bun test/profile-typecheck.ts",
     "profile:typecheck:lit": "PROFILE_FIXTURE=lit-app bun test/profile-typecheck.ts",

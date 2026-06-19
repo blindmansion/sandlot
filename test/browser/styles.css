@@ -1,0 +1,98 @@
+:root {
+	color-scheme: light dark;
+	font-family:
+		ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+body {
+	margin: 0;
+	display: flex;
+	justify-content: center;
+	padding: 3rem 1rem;
+	background: Canvas;
+	color: CanvasText;
+}
+
+main {
+	width: 100%;
+	max-width: 720px;
+}
+
+h1 {
+	margin: 0 0 0.25rem;
+	font-size: 1.6rem;
+}
+
+.subtitle {
+	margin: 0 0 1.5rem;
+	opacity: 0.7;
+}
+
+.summary {
+	font-weight: 600;
+	padding: 0.75rem 1rem;
+	border-radius: 0.5rem;
+	margin-bottom: 1.5rem;
+	background: color-mix(in srgb, Canvas 80%, gray);
+}
+
+.summary.pass {
+	background: color-mix(in srgb, Canvas 70%, green);
+}
+
+.summary.fail {
+	background: color-mix(in srgb, Canvas 70%, red);
+}
+
+ol {
+	margin: 0;
+	padding-left: 1.25rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+}
+
+li {
+	line-height: 1.4;
+}
+
+li .label {
+	font-weight: 600;
+}
+
+li .detail {
+	display: block;
+	font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+	font-size: 0.85rem;
+	opacity: 0.75;
+}
+
+li.pass::marker {
+	content: "✓ ";
+	color: green;
+}
+
+li.fail::marker {
+	content: "✗ ";
+	color: red;
+}
+
+li.skip::marker {
+	content: "⊘ ";
+	color: goldenrod;
+}
+
+li.skip .detail {
+	color: goldenrod;
+	opacity: 0.9;
+}
+
+li.section {
+	list-style: none;
+	margin: 1rem 0 0.25rem -1.25rem;
+	font-size: 0.75rem;
+	font-weight: 700;
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+	opacity: 0.6;
+}

@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>sandlot — browser smoke test</title>
+		<link rel="stylesheet" href="./styles.css" />
+	</head>
+	<body>
+		<main>
+			<h1>sandlot browser smoke test</h1>
+			<p class="subtitle">
+				Driving the typecheck, bundle, and install modules against an in-memory
+				filesystem inside a Bun-bundled page.
+			</p>
+			<div id="summary" class="summary">Running…</div>
+			<ol id="results"></ol>
+		</main>
+		<script type="module" src="./app.ts"></script>
+	</body>
+</html>
