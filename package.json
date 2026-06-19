@@ -5,7 +5,9 @@
   "scripts": {
     "smoke": "bun test/smoke.ts",
     "profile:typecheck": "bun test/profile-typecheck.ts",
-    "profile:bundle": "bun test/profile-bundle.ts"
+    "profile:typecheck:react": "PROFILE_FIXTURE=react-app bun test/profile-typecheck.ts",
+    "profile:bundle": "bun test/profile-bundle.ts",
+    "profile:bundle:react": "PROFILE_FIXTURE=react-app PROFILE_PLATFORM=browser bun test/profile-bundle.ts"
   },
   "devDependencies": {
     "@types/bun": "latest"

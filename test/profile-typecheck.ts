@@ -47,6 +47,8 @@ import { loadFixture, type Workspace } from "./helpers";
 
 const WARM_RUNS = Number(process.env.PROFILE_WARM ?? "5");
 const EDIT_RUNS = Number(process.env.PROFILE_EDITS ?? "5");
+/** Fixture under test/fixtures to profile (e.g. "profiling", "react-app"). */
+const FIXTURE = process.env.PROFILE_FIXTURE ?? "profiling";
 
 function banner(title: string): void {
 	const line = "─".repeat(Math.max(0, 70 - title.length - 4));
@@ -211,10 +213,11 @@ async function installDeps(ws: Workspace): Promise<boolean> {
 
 async function run(): Promise<void> {
 	banner("Typecheck profiler — small project, large dependencies");
+	info("fixture", FIXTURE);
 	info("warm runs", WARM_RUNS);
 	info("edit-loop runs", EDIT_RUNS);
 
-	const ws = await loadFixture("profiling");
+	const ws = await loadFixture(FIXTURE);
 	info("temp root", ws.root);
 
 	try {
@@ -305,8 +308,12 @@ async function run(): Promise<void> {
 		banner("Persistent — session.check() reuses the cached program");
 		const session = createTypecheckSession(baseOptions);
 		try {
-			const [, coldTime] = await timed(() => session.check());
+			const [coldResult, coldTime] = await timed(() => session.check());
 			info("cold first check", ms(coldTime));
+			info(
+				"diagnostics (clean baseline)",
+				summarizeDiagnostics(coldResult.diagnostics).all.length,
+			);
 
 			const persistentWarm: number[] = [];
 			for (let i = 0; i < WARM_RUNS; i++) {

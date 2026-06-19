@@ -58,6 +58,13 @@ import { loadFixture, type Workspace } from "./helpers";
 const WARM_RUNS = Number(process.env.PROFILE_WARM ?? "5");
 const EDIT_RUNS = Number(process.env.PROFILE_EDITS ?? "5");
 const PROFILE_WASM = process.env.PROFILE_WASM !== "0";
+/** Fixture under test/fixtures to profile (e.g. "profiling", "react-app"). */
+const FIXTURE = process.env.PROFILE_FIXTURE ?? "profiling";
+/** esbuild platform for the bundle (browser for web widgets, node for CLIs). */
+const PLATFORM = (process.env.PROFILE_PLATFORM ?? "node") as
+	| "browser"
+	| "node"
+	| "neutral";
 
 function banner(title: string): void {
 	const line = "─".repeat(Math.max(0, 70 - title.length - 4));
@@ -501,11 +508,13 @@ function loadWasmEngine(): EsbuildAPI | null {
 
 async function run(): Promise<void> {
 	banner("Bundle profiler — small project, large dependencies");
+	info("fixture", FIXTURE);
+	info("platform", PLATFORM);
 	info("warm runs", WARM_RUNS);
 	info("edit-loop runs", EDIT_RUNS);
 	info("profile wasm", PROFILE_WASM);
 
-	const ws = await loadFixture("profiling");
+	const ws = await loadFixture(FIXTURE);
 	info("temp root", ws.root);
 
 	try {
@@ -518,9 +527,14 @@ async function run(): Promise<void> {
 		// ── Wire an edit-loop file into the entry's import graph ───────────
 		// Bundling only includes files reachable from the entry point, so the
 		// edited module must be imported. We add a side-effect import once.
+		// The entry comes from the fixture's package.json "main" so this works
+		// for both the .ts CLI fixture and the .tsx react fixture.
+		const pkg = JSON.parse(await ws.fs.readFile("/package.json")) as {
+			main?: string;
+		};
+		const indexPath = `/${(pkg.main ?? "src/index.ts").replace(/^\.?\/*/, "")}`;
 		const editPath = "/src/edit.ts";
 		await ws.fs.writeFile(editPath, editContent(0));
-		const indexPath = "/src/index.ts";
 		const originalIndex = await ws.fs.readFile(indexPath);
 		await ws.fs.writeFile(indexPath, `import "./edit";\n${originalIndex}`);
 
@@ -546,7 +560,7 @@ async function run(): Promise<void> {
 			fs: counting.fs,
 			entryPoint: indexPath,
 			entryResolveDir: "/",
-			options: { format: "esm", platform: "node" },
+			options: { format: "esm", platform: PLATFORM },
 		};
 
 		// ── Engine startup (isolated from per-build cost) ──────────────────
