@@ -4,7 +4,10 @@
   "type": "module",
   "scripts": {
     "smoke": "bun test/smoke.ts",
-    "smoke:browser": "bun test/browser/serve.ts"
+    "smoke:browser": "bun test/browser/serve.ts",
+    "sandbox": "bun test/browser/serve.ts",
+    "sandbox:open": "bun test/browser/open.ts",
+    "sandbox:close": "agent-browser close"
   },
   "devDependencies": {
     "@types/bun": "latest"

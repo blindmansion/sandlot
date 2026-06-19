@@ -1,0 +1,400 @@
+/// <reference lib="dom" />
+/**
+ * Browser-agent bridge: expose the sandlot toolchain as a serializable
+ * `window.sandlot` facade so a host-side coding agent can drive the in-memory
+ * sandbox entirely through `agent-browser eval`.
+ *
+ * This is the interactive counterpart of `app.ts` (which runs a fixed smoke
+ * script). Instead of executing a hardcoded sequence, this page constructs the
+ * toolchain once — typecheck, bundle, install, run, render, all backed by a
+ * single {@link MemoryUnionFs} — and attaches a facade to `window`.
+ *
+ * Design rule: every facade method returns structured-clone/JSON-safe data
+ * only (strings, numbers, arrays, plain objects). Nothing that can't cross the
+ * CDP `Runtime.evaluate` boundary (no FS instances, class instances, or
+ * functions) is ever returned.
+ *
+ * Drive it from the host:
+ *
+ * ```bash
+ * agent-browser open http://localhost:4321/sandbox.html
+ * agent-browser eval "await sandlot.ready()"
+ * agent-browser eval "await sandlot.fs.seed({'/src/index.ts':'export const x=1'})"
+ * agent-browser eval "(await sandlot.typecheck()).errorCount"
+ * agent-browser eval "(await sandlot.bundle('/src/index.ts')).inputs"
+ * agent-browser eval "await sandlot.render('/src/view.ts')"
+ * ```
+ */
+
+import { createSandHostFunctions } from "../../src/host-functions";
+import { generateHostFunctionDts } from "../../src/run/dts";
+import {
+	type BundleOptions,
+	createBundleFn,
+	createWasmEsbuild,
+} from "../../src/toolchain/bundle";
+import {
+	getProjectRoot,
+	install,
+	readDepsFromPackageJson,
+} from "../../src/toolchain/install";
+import {
+	createTypecheckSession,
+	summarizeDiagnostics,
+} from "../../src/toolchain/typecheck";
+import type { Diagnostic } from "../../src/toolchain/typecheck";
+import { createIframeRenderFn } from "../../src/render";
+import { createIframeWorkerRunFn } from "../../src/runtimes/iframe-worker-run";
+import { MemoryUnionFs } from "../helpers/memory-fs";
+
+// esbuild-wasm requires the .wasm binary to match the JS package version.
+// Pinned to the version in package.json (esbuild-wasm@0.28.1).
+const ESBUILD_WASM_URL =
+	"https://cdn.jsdelivr.net/npm/esbuild-wasm@0.28.1/esbuild.wasm";
+
+const NODE_MODULES_PATH = "/node_modules";
+
+// ---------------------------------------------------------------------------
+// Serializable result shapes (what crosses the CDP boundary)
+// ---------------------------------------------------------------------------
+
+interface FsStat {
+	isFile: boolean;
+	isDirectory: boolean;
+	isSymbolicLink: boolean;
+}
+
+interface TypecheckReport {
+	errorCount: number;
+	warningCount: number;
+	diagnostics: Diagnostic[];
+}
+
+interface BundleReport {
+	code: string;
+	css?: string;
+	inputs: string[];
+}
+
+interface InstallReport {
+	name: string;
+	version: string;
+}
+
+interface LogLine {
+	level: string;
+	text: string;
+}
+
+interface ExecReport {
+	ok: boolean;
+	log: LogLine[];
+	error?: { message: string; name?: string };
+}
+
+interface SandlotFs {
+	read(path: string): Promise<string>;
+	write(path: string, content: string): Promise<void>;
+	exists(path: string): Promise<boolean>;
+	readdir(path: string): Promise<string[]>;
+	stat(path: string): Promise<FsStat>;
+	mkdir(path: string, opts?: { recursive?: boolean }): Promise<void>;
+	rm(path: string, opts?: { recursive?: boolean; force?: boolean }): Promise<void>;
+	seed(map: Record<string, string>): Promise<void>;
+	list(): Promise<string[]>;
+}
+
+interface SeedFixtureResult {
+	fixture: string;
+	files: string[];
+	installed?: InstallReport[];
+}
+
+interface SandlotApi {
+	ready(): Promise<void>;
+	fs: SandlotFs;
+	typecheck(): Promise<TypecheckReport>;
+	bundle(entryPoint: string, options?: BundleOptions): Promise<BundleReport>;
+	install(specs?: string[]): Promise<InstallReport[]>;
+	run(entryPoint: string): Promise<ExecReport>;
+	render(entryPoint: string, options?: { css?: string }): Promise<ExecReport>;
+	/** List committed fixtures available on the dev server (e.g. `lit-app`). */
+	fixtures(): Promise<string[]>;
+	/**
+	 * Seed a committed fixture from `test/fixtures/<name>` into the in-memory
+	 * filesystem. Pass `{ install: true }` to also install its declared deps.
+	 */
+	seedFixture(
+		name: string,
+		options?: { install?: boolean },
+	): Promise<SeedFixtureResult>;
+	/**
+	 * Clear the in-memory filesystem (including installed `node_modules`/store)
+	 * and reset the typecheck session, for switching tasks without reloading
+	 * the page. Returns the number of top-level entries removed.
+	 */
+	reset(): Promise<{ removed: number }>;
+}
+
+declare global {
+	interface Window {
+		sandlot: SandlotApi;
+		__SANDLOT_READY__: boolean;
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Toolchain wiring (constructed once, shared across every eval call)
+// ---------------------------------------------------------------------------
+
+const fs = new MemoryUnionFs();
+const esbuild = createWasmEsbuild({ wasmURL: ESBUILD_WASM_URL });
+const bundleFn = createBundleFn(esbuild);
+
+// Sand.* host functions, shared by run/render so guest code can call Sand.fs.*.
+const sandHostFunctions = createSandHostFunctions({ fs });
+
+// Ambient declarations for the Sand.* globals, surfaced to the typechecker so
+// guest code that uses `Sand.fs.readFile(...)` typechecks cleanly.
+const sandGlobals = new Map<string, string>([
+	[
+		"/__sandlot_globals__.d.ts",
+		generateHostFunctionDts(sandHostFunctions, { async: true }),
+	],
+]);
+
+// One persistent, incremental typecheck session in `render` mode (ES + DOM
+// libs). The fs facade is the single write path, so every mutation notifies
+// the session; `install` invalidates it (node_modules changed).
+const typecheckSession = createTypecheckSession({
+	fs,
+	mode: "render",
+	compilerOptions: { strict: true },
+	globalDeclarations: sandGlobals,
+});
+
+// Hidden iframe that hosts the Worker-based runner.
+const runFrame = document.createElement("iframe");
+runFrame.style.display = "none";
+document.body.appendChild(runFrame);
+const runFn = createIframeWorkerRunFn(runFrame);
+
+// Visible iframe that hosts rendered views (declared in sandbox.html).
+const renderFrameEl = document.getElementById("render-frame");
+if (!(renderFrameEl instanceof HTMLIFrameElement)) {
+	throw new Error("#render-frame iframe not found in sandbox.html");
+}
+const renderFn = createIframeRenderFn(renderFrameEl);
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function toExecReport(result: {
+	ok: boolean;
+	log: Array<{ level: string; text: string }>;
+	error?: { message: string; name?: string };
+}): ExecReport {
+	return {
+		ok: result.ok,
+		log: result.log.map((l) => ({ level: l.level, text: l.text })),
+		...(result.error
+			? { error: { message: result.error.message, name: result.error.name } }
+			: {}),
+	};
+}
+
+// ---------------------------------------------------------------------------
+// Facade
+// ---------------------------------------------------------------------------
+
+const sandlotFs: SandlotFs = {
+	async read(path) {
+		return fs.readFile(path);
+	},
+	async write(path, content) {
+		await fs.writeFile(path, content);
+		await typecheckSession.changed(path);
+	},
+	async exists(path) {
+		return fs.exists(path);
+	},
+	async readdir(path) {
+		return fs.readdir(path);
+	},
+	async stat(path) {
+		const s = await fs.stat(path);
+		return {
+			isFile: s.isFile,
+			isDirectory: s.isDirectory,
+			isSymbolicLink: s.isSymbolicLink,
+		};
+	},
+	async mkdir(path, opts) {
+		await fs.mkdir(path, opts);
+	},
+	async rm(path, opts) {
+		await fs.rm(path, opts);
+		await typecheckSession.deleted(path);
+	},
+	async seed(map) {
+		for (const [path, content] of Object.entries(map)) {
+			await fs.writeFile(path, content);
+			await typecheckSession.changed(path);
+		}
+	},
+	async list() {
+		return fs.getAllPaths();
+	},
+};
+
+const sandlot: SandlotApi = {
+	async ready() {
+		// Force esbuild-wasm initialization (lazy on first build) so subsequent
+		// bundle/run/render calls don't pay the init cost mid-action.
+		await esbuild.build({
+			stdin: { contents: "1;", loader: "js" },
+			write: false,
+		});
+	},
+
+	fs: sandlotFs,
+
+	async typecheck() {
+		const { diagnostics } = await typecheckSession.check();
+		const summary = summarizeDiagnostics(diagnostics);
+		return {
+			errorCount: summary.errorCount,
+			warningCount: summary.warningCount,
+			diagnostics: summary.all,
+		};
+	},
+
+	async bundle(entryPoint, options) {
+		const result = await bundleFn({
+			fs,
+			entryPoint,
+			entryResolveDir: "/",
+			options: {
+				format: "esm",
+				platform: "browser",
+				target: "es2022",
+				...options,
+			},
+		});
+		return { code: result.code, css: result.css, inputs: result.inputs };
+	},
+
+	async install(specs) {
+		const root = await getProjectRoot({ cwd: "/", fs });
+		const resolvedSpecs =
+			specs ?? (root ? readDepsFromPackageJson(root.packageJson) : []);
+		const installed = await install(fs, resolvedSpecs, {
+			nodeModulesPath: NODE_MODULES_PATH,
+			projectName: root?.name ?? "sandlot-sandbox",
+		});
+		// node_modules changed out from under the typecheck session.
+		typecheckSession.invalidate();
+		return installed.map((r) => ({ name: r.name, version: r.version }));
+	},
+
+	async run(entryPoint) {
+		const { code } = await bundleFn({
+			fs,
+			entryPoint,
+			entryResolveDir: "/",
+			options: { format: "esm", platform: "neutral", target: "es2022" },
+		});
+		const result = await runFn({ code, hostFunctions: sandHostFunctions });
+		return toExecReport(result);
+	},
+
+	async render(entryPoint, options) {
+		const { code, css } = await bundleFn({
+			fs,
+			entryPoint,
+			entryResolveDir: "/",
+			options: { format: "esm", platform: "browser", target: "es2022" },
+		});
+		const handle = renderFn({
+			code,
+			css: options?.css ?? css,
+			hostFunctions: sandHostFunctions,
+		});
+		// Intentionally leave the handle open so the rendered view stays visible
+		// in the iframe for screenshots. `createIframeRenderFn` tears down the
+		// previous render automatically on the next call.
+		const result = await handle.result;
+		return toExecReport(result);
+	},
+
+	async fixtures() {
+		const res = await fetch("/fixtures");
+		if (!res.ok) throw new Error(`failed to list fixtures (${res.status})`);
+		return (await res.json()) as string[];
+	},
+
+	async seedFixture(name, options) {
+		const res = await fetch(`/fixtures/${encodeURIComponent(name)}.json`);
+		if (!res.ok) {
+			throw new Error(`failed to load fixture "${name}" (${res.status})`);
+		}
+		const map = (await res.json()) as Record<string, string>;
+		await sandlotFs.seed(map);
+		const result: SeedFixtureResult = {
+			fixture: name,
+			files: Object.keys(map).sort(),
+		};
+		if (options?.install) {
+			result.installed = await sandlot.install();
+		}
+		return result;
+	},
+
+	async reset() {
+		const topLevel = await fs.readdir("/");
+		for (const name of topLevel) {
+			await fs.rm(`/${name}`, { recursive: true, force: true });
+		}
+		// The whole filesystem changed out from under the typecheck session.
+		typecheckSession.invalidate();
+		return { removed: topLevel.length };
+	},
+};
+
+window.sandlot = sandlot;
+window.__SANDLOT_READY__ = true;
+
+const status = document.getElementById("status");
+function setStatus(text: string): void {
+	if (status) status.textContent = text;
+}
+
+// Optionally auto-seed a fixture so a session starts pre-loaded rather than
+// from scratch: open `/sandbox.html?fixture=lit-app` (add `&install=1` to also
+// install its declared dependencies).
+const params = new URLSearchParams(location.search);
+const autoFixture = params.get("fixture");
+
+if (!autoFixture) {
+	setStatus(
+		"window.sandlot ready. Call `await sandlot.ready()` to warm esbuild, then drive the toolchain. Tip: open ?fixture=<name> to auto-seed a fixture.",
+	);
+} else {
+	const autoInstall = params.get("install") === "1";
+	setStatus(`Seeding fixture "${autoFixture}"…`);
+	void sandlot
+		.seedFixture(autoFixture, { install: autoInstall })
+		.then((result) => {
+			const installedNote = result.installed
+				? `, installed ${result.installed.length} package(s)`
+				: "";
+			setStatus(
+				`Seeded fixture "${result.fixture}" (${result.files.length} files${installedNote}). window.sandlot ready.`,
+			);
+		})
+		.catch((error: unknown) => {
+			const message = error instanceof Error ? error.message : String(error);
+			setStatus(`Failed to seed fixture "${autoFixture}": ${message}`);
+		});
+}
