@@ -29,13 +29,14 @@
 
 import { getProjectRoot, install, readDepsFromPackageJson } from "../src/install";
 import {
-	createTypecheckFn,
+	createTypecheckSession,
 	loadLibFilesFromCDN,
 	loadTsConfig,
 	RENDER_LIBS,
+	runTypecheck,
 	summarizeDiagnostics,
-	type TypecheckArgs,
-	type TypecheckFn,
+	type TypecheckResult,
+	type TypecheckSessionOptions,
 } from "../src/typecheck";
 import type { NodeUnionFs } from "./helpers";
 import { loadFixture, type Workspace } from "./helpers";
@@ -81,16 +82,18 @@ interface Stats {
 
 function summarize(samples: number[]): Stats {
 	const sorted = [...samples].sort((a, b) => a - b);
+	const n = sorted.length;
 	const sum = sorted.reduce((a, b) => a + b, 0);
-	const pct = (p: number): number =>
-		sorted[Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length))];
+	const at = (idx: number): number =>
+		sorted[Math.max(0, Math.min(n - 1, idx))] ?? 0;
+	const pct = (p: number): number => at(Math.floor((p / 100) * n));
 	return {
-		runs: sorted.length,
-		min: sorted[0],
+		runs: n,
+		min: at(0),
 		median: pct(50),
 		p95: pct(95),
-		max: sorted[sorted.length - 1],
-		mean: sum / sorted.length,
+		max: at(n - 1),
+		mean: n === 0 ? 0 : sum / n,
 	};
 }
 
@@ -100,6 +103,14 @@ function reportStats(label: string, stats: Stats): void {
 		`n=${stats.runs}  min=${ms(stats.min)}  median=${ms(stats.median)}  ` +
 			`p95=${ms(stats.p95)}  max=${ms(stats.max)}  mean=${ms(stats.mean)}`,
 	);
+}
+
+/** Stable signature of a result's diagnostics, for cross-path equality checks. */
+function diagSignature(result: TypecheckResult): string {
+	return summarizeDiagnostics(result.diagnostics)
+		.all.map((d) => `${d.file}:${d.line}:${d.column}:${d.category}:${d.code}`)
+		.sort()
+		.join("|");
 }
 
 // ---------------------------------------------------------------------------
@@ -254,75 +265,87 @@ async function run(): Promise<void> {
 			return;
 		}
 
-		// Pre-loaded libs are injected as deps so per-call timings exclude the
-		// one-time CDN fetch and isolate the extract + program-build + check cost.
-		const typecheck: TypecheckFn = createTypecheckFn({ libMap });
+		// Shared options. The pre-loaded libMap is injected so per-call timings
+		// exclude the one-time CDN fetch.
+		const baseOptions: TypecheckSessionOptions = {
+			fs: ws.fs,
+			mode: "render",
+			compilerOptions,
+			libMap,
+		};
 
-		// Warm up JIT / first program build so the first measured config isn't
-		// unfairly penalized.
-		const warmup = await typecheck({ fs: ws.fs, mode: "render", compilerOptions });
-		info("warmup errors", summarizeDiagnostics(warmup.diagnostics).errorCount);
+		const editContent = (i: number): string =>
+			`export const REVISION_${i} = ${i};\n` +
+			`export function touched_${i}(x: number): number { return x + ${i}; }\n`;
 
-		// Compare three configurations on the *same* fixture. The getDirectories
-		// index applies to all of them; skipLibCheck and includeSuggestions are
-		// toggled here so each effect can be read independently.
-		const configs: Array<{ label: string; args: TypecheckArgs }> = [
-			{
-				label: "A. baseline    (skipLibCheck=false, suggestions=on)",
-				args: {
-					fs: ws.fs,
-					mode: "render",
-					compilerOptions: { ...compilerOptions, skipLibCheck: false },
-					includeSuggestions: true,
-				},
-			},
-			{
-				label: "B. skipLibCheck (skipLibCheck=true,  suggestions=on)",
-				args: {
-					fs: ws.fs,
-					mode: "render",
-					compilerOptions: { ...compilerOptions, skipLibCheck: true },
-					includeSuggestions: true,
-				},
-			},
-			{
-				label: "C. errors-only  (skipLibCheck=true,  suggestions=off)",
-				args: {
-					fs: ws.fs,
-					mode: "render",
-					compilerOptions: { ...compilerOptions, skipLibCheck: true },
-					includeSuggestions: false,
-				},
-			},
-		];
+		// ── One-shot path (rebuilds the program every call) ────────────────
+		banner("One-shot — runTypecheck() rebuilds the program every call");
+		// Warm up JIT / first build so the first measurement isn't penalized.
+		await runTypecheck(baseOptions);
 
-		for (const { label, args } of configs) {
-			banner(label);
+		const oneShotWarm: number[] = [];
+		for (let i = 0; i < WARM_RUNS; i++) {
+			const [, t] = await timed(() => runTypecheck(baseOptions));
+			oneShotWarm.push(t);
+		}
+		reportStats("warm", summarize(oneShotWarm));
 
-			// Warm runs (identical input) — steady-state per-call cost.
-			const warmSamples: number[] = [];
-			let errors = 0;
+		const oneShotEdit: number[] = [];
+		const oneShotSigs: string[] = [];
+		for (let i = 0; i < EDIT_RUNS; i++) {
+			await ws.fs.writeFile("/src/edit.ts", editContent(i));
+			const [result, t] = await timed(() => runTypecheck(baseOptions));
+			oneShotEdit.push(t);
+			oneShotSigs.push(diagSignature(result));
+		}
+		await ws.fs.rm("/src/edit.ts");
+		reportStats("edit", summarize(oneShotEdit));
+
+		// ── Persistent session (incremental, reuses the program) ──────────
+		banner("Persistent — session.check() reuses the cached program");
+		const session = createTypecheckSession(baseOptions);
+		try {
+			const [, coldTime] = await timed(() => session.check());
+			info("cold first check", ms(coldTime));
+
+			const persistentWarm: number[] = [];
 			for (let i = 0; i < WARM_RUNS; i++) {
-				const [result, t] = await timed(() => typecheck(args));
-				warmSamples.push(t);
-				errors = summarizeDiagnostics(result.diagnostics).errorCount;
+				const [, t] = await timed(() => session.check());
+				persistentWarm.push(t);
 			}
-			info("errors", errors);
-			reportStats("warm", summarize(warmSamples));
+			reportStats("warm", summarize(persistentWarm));
 
-			// Edit-loop runs — mutate one source file each iteration (editor loop).
-			const editSamples: number[] = [];
+			const persistentEdit: number[] = [];
+			let mismatches = 0;
 			for (let i = 0; i < EDIT_RUNS; i++) {
-				await ws.fs.writeFile(
-					"/src/edit.ts",
-					`export const REVISION_${i} = ${i};\n` +
-						`export function touched_${i}(x: number): number { return x + ${i}; }\n`,
-				);
-				const [, t] = await timed(() => typecheck(args));
-				editSamples.push(t);
+				await ws.fs.writeFile("/src/edit.ts", editContent(i));
+				if (i === 0) {
+					await session.created("/src/edit.ts", editContent(i));
+				} else {
+					await session.changed("/src/edit.ts", editContent(i));
+				}
+				const [result, t] = await timed(() => session.check());
+				persistentEdit.push(t);
+				if (diagSignature(result) !== oneShotSigs[i]) mismatches++;
 			}
 			await ws.fs.rm("/src/edit.ts");
-			reportStats("edit", summarize(editSamples));
+			await session.deleted("/src/edit.ts");
+			reportStats("edit", summarize(persistentEdit));
+			info(
+				"diagnostics match one-shot",
+				mismatches === 0 ? "yes (all iterations)" : `NO (${mismatches} mismatches)`,
+			);
+
+			// ── Speedup summary ───────────────────────────────────────────
+			banner("Speedup (persistent vs one-shot, median)");
+			const warmSpeedup =
+				summarize(oneShotWarm).median / summarize(persistentWarm).median;
+			const editSpeedup =
+				summarize(oneShotEdit).median / summarize(persistentEdit).median;
+			info("warm", `${warmSpeedup.toFixed(1)}x faster`);
+			info("edit", `${editSpeedup.toFixed(1)}x faster`);
+		} finally {
+			session.dispose();
 		}
 
 		banner("Done");

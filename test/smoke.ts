@@ -17,7 +17,7 @@ import * as esbuild from "esbuild";
 import { createBundleFn } from "../src/bundle";
 import { getProjectRoot, install, readDepsFromPackageJson } from "../src/install";
 import {
-	createTypecheckFn,
+	createTypecheckSession,
 	formatDiagnostics,
 	summarizeDiagnostics,
 } from "../src/typecheck";
@@ -59,41 +59,45 @@ async function demoHarness(): Promise<Workspace> {
 }
 
 async function demoTypecheck(ws: Workspace): Promise<void> {
-	banner("2. Typecheck — run the TS compiler over the fixture (network: libs)");
+	banner("2. Typecheck — persistent session, incrementally updated (network: libs)");
 
-	const typecheck = createTypecheckFn();
+	const session = createTypecheckSession({
+		fs: ws.fs,
+		mode: "run",
+		compilerOptions: { strict: true },
+	});
 
 	try {
-		// Clean pass over the committed fixture.
-		const clean = await typecheck({
-			fs: ws.fs,
-			mode: "run",
-			compilerOptions: { strict: true },
-		});
-		const cleanSummary = summarizeDiagnostics(clean.diagnostics);
-		info("clean fixture errors", cleanSummary.errorCount);
+		// Clean pass over the committed fixture (first check builds the program).
+		const clean = await session.check();
+		info("clean fixture errors", summarizeDiagnostics(clean.diagnostics).errorCount);
 
-		// Introduce a type error and re-check (the FS is enumerated each run).
+		// Introduce a type error, tell the session a file was created, re-check.
 		await ws.fs.writeFile(
 			"/src/bad.ts",
 			"export const answer: number = \"not a number\";\n",
 		);
-		const dirty = await typecheck({
-			fs: ws.fs,
-			mode: "run",
-			compilerOptions: { strict: true },
-		});
+		await session.created("/src/bad.ts");
+		const dirty = await session.check();
 		const dirtySummary = summarizeDiagnostics(dirty.diagnostics);
 		info("after adding bad.ts, errors", dirtySummary.errorCount);
 		console.log(formatDiagnostics(dirtySummary.all).replace(/^/gm, "     "));
 
-		// Clean up so later sections see the pristine tree.
+		// Remove the file, notify the session, and confirm the error clears.
 		await ws.fs.rm("/src/bad.ts");
+		await session.deleted("/src/bad.ts");
+		const reclean = await session.check();
+		info(
+			"after deleting bad.ts, errors",
+			summarizeDiagnostics(reclean.diagnostics).errorCount,
+		);
 	} catch (error) {
 		console.warn(
 			"   ⚠ skipped (could not load TS libs from CDN):",
 			(error as Error).message,
 		);
+	} finally {
+		session.dispose();
 	}
 }
 

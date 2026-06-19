@@ -1,12 +1,13 @@
 /**
  * TypeScript type-checking module
  *
- * Provides a factory-based typecheck pipeline that bridges the async TypecheckFileSystem
- * with TypeScript's synchronous virtual file system for type-checking in the browser.
+ * Provides a persistent, incremental typecheck session that bridges the async
+ * TypecheckFileSystem with TypeScript's synchronous virtual file system, keeping
+ * one program alive so only changed files are reparsed between checks.
  */
 
-// Factory
-export { createTypecheckFn } from "./create";
+// Session API
+export { createTypecheckSession, runTypecheck } from "./session";
 // Filesystem interface
 export type { TypecheckFileStat, TypecheckFileSystem } from "./fs";
 // Lib loading (for consumers who want to pre-load and share lib files)
@@ -27,8 +28,8 @@ export {
 export type {
 	AllDiagnostics,
 	Diagnostic,
-	TypecheckArgs,
-	TypecheckDeps,
-	TypecheckFn,
+	FileChange,
 	TypecheckResult,
+	TypecheckSession,
+	TypecheckSessionOptions,
 } from "./types";

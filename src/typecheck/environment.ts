@@ -8,10 +8,36 @@
 import {
 	createSystem,
 	createVirtualTypeScriptEnvironment,
+	type VirtualTypeScriptEnvironment,
 } from "@typescript/vfs";
 import ts from "typescript";
 import type { TypecheckFileSystem } from "./fs";
-import type { TypeCheckerEnvResult, TypecheckArgs } from "./types";
+
+/**
+ * A built, persistent TypeScript environment plus the mutable state the session
+ * needs to keep it incrementally up to date.
+ */
+export interface BuiltEnv {
+	/** The virtual TypeScript environment (owns the language service + program). */
+	env: VirtualTypeScriptEnvironment;
+	/** The file map backing the environment's System. */
+	fsMap: Map<string, string>;
+	/** Project root files currently included in the program (mutable). */
+	rootFiles: string[];
+	/**
+	 * `directory -> immediate child directory names` index backing the patched
+	 * `getDirectories`/`directoryExists`. Mutating it in place updates resolution
+	 * because the System closures capture this same Map reference.
+	 */
+	directoryIndex: Map<string, Set<string>>;
+}
+
+/** Options consumed when building an environment. */
+export interface BuildEnvOptions {
+	compilerOptions: ts.CompilerOptions;
+	workingDirectory?: string;
+	rootFiles?: string[];
+}
 
 // ============================================================================
 // File extraction from TypecheckFileSystem
@@ -347,54 +373,87 @@ function buildDirectoryIndex(
 	};
 
 	for (const path of fsMap.keys()) {
-		const parts = path.split("/");
-		// parts[0] is "" for absolute paths; the last entry is the file name.
-		let dir = "";
-		for (let i = 1; i < parts.length - 1; i++) {
-			const child = parts[i];
-			if (!child) continue;
-			add(dir === "" ? "/" : dir, child);
-			dir = `${dir}/${child}`;
-		}
+		addToDirectoryIndex(index, path);
 	}
 
 	return index;
 }
 
 /**
- * Create a TypeScript type-checker environment from a TypecheckFileSystem.
+ * Register a single file path's ancestor directories into an existing index.
+ * Used when a new project file is created so module resolution can see it.
  *
- * This extracts files from the filesystem and creates a virtual TypeScript
- * environment for type-checking. The caller is responsible for adding any
- * custom declaration files (e.g., sandbox-env.d.ts) to the filesystem
- * before calling this function.
+ * Removal is intentionally not implemented: when a file is deleted its ancestor
+ * directories usually still hold sibling files, and a stale directory entry is
+ * harmless (resolution probes for files that no longer exist and simply fails).
+ */
+export function addToDirectoryIndex(
+	index: Map<string, Set<string>>,
+	path: string,
+): void {
+	const parts = path.split("/");
+	// Every ancestor directory must be registered as a key (even when it only
+	// contains files), so `directoryExists` is correct for leaf directories.
+	if (!index.has("/")) index.set("/", new Set<string>());
+	let dir = "";
+	for (let i = 1; i < parts.length - 1; i++) {
+		const child = parts[i];
+		if (!child) continue;
+		const key = dir === "" ? "/" : dir;
+		let set = index.get(key);
+		if (!set) {
+			set = new Set<string>();
+			index.set(key, set);
+		}
+		set.add(child);
+		dir = `${dir}/${child}`;
+		if (!index.has(dir)) index.set(dir, new Set<string>());
+	}
+}
+
+/** Normalize a directory query to an index key (no trailing slash except root). */
+function normalizeDirKey(directory: string): string {
+	const key =
+		directory.length > 1 && directory.endsWith("/")
+			? directory.slice(0, -1)
+			: directory;
+	return key === "" ? "/" : key;
+}
+
+/**
+ * Build a persistent TypeScript type-checker environment from a
+ * TypecheckFileSystem.
+ *
+ * This extracts files from the filesystem once and creates a virtual TypeScript
+ * environment that the caller keeps alive, feeding it incremental file changes
+ * so dependency `.d.ts` and lib files are parsed/bound only once.
  *
  * Compiler options come from the caller (typically parsed from tsconfig.json),
- * but `lib` and `skipDefaultLibCheck` are always overridden to match the lib
- * files that were actually loaded into the virtual FS.
+ * but `lib`, `skipDefaultLibCheck`, and `skipLibCheck` are overridden to match
+ * the lib files that were actually loaded into the virtual FS.
  *
  * @param fs - The filesystem containing source files
  * @param libMap - TypeScript lib files (lib.es2020.d.ts, lib.dom.d.ts, etc.)
- * @param args - Per-call arguments (working directory, compiler options, etc.)
+ * @param opts - Compiler options, working directory, and optional root files
  */
-export async function createTypeCheckerEnv(
+export async function buildEnv(
 	fs: TypecheckFileSystem,
 	libMap: Map<string, string>,
-	args: TypecheckArgs,
-): Promise<TypeCheckerEnvResult> {
-	const workingDir = args.workingDirectory || "/";
+	opts: BuildEnvOptions,
+): Promise<BuiltEnv> {
+	const workingDir = opts.workingDirectory || "/";
 
 	// Merge caller's compiler options with environment-controlled overrides.
 	// `lib` must match the files we loaded, not what tsconfig says, because
 	// in our virtual FS only the loaded libs exist.
 	const compilerOptions: ts.CompilerOptions = {
-		...args.compilerOptions,
+		...opts.compilerOptions,
 		lib: deriveLibFromLoadedFiles(libMap),
 		skipDefaultLibCheck: true,
 		// Default to skipping semantic checks of dependency `.d.ts` files — the
 		// dominant cost when a small project depends on large libraries. Callers
 		// can opt back in by setting `skipLibCheck: false` in their tsconfig.
-		skipLibCheck: args.compilerOptions.skipLibCheck ?? true,
+		skipLibCheck: opts.compilerOptions.skipLibCheck ?? true,
 	};
 
 	// Step 1: Extract files from the filesystem
@@ -409,28 +468,24 @@ export async function createTypeCheckerEnv(
 	}
 
 	// Step 3: Determine root files
-	const rootFiles = args.rootFiles || findRootFiles(fsMap, workingDir);
+	const rootFiles = opts.rootFiles || findRootFiles(fsMap, workingDir);
 
 	// Step 4: Create the TypeScript virtual environment
 	const system = createSystem(fsMap);
 
-	// @typescript/vfs's createSystem stubs getDirectories to return [],
-	// which breaks TypeScript's module resolution for @types subpath
-	// exports (e.g. react-dom/client → @types/react-dom/client.d.ts).
-	// Derive real directory listings from the fsMap keys.
-	//
-	// Module resolution calls getDirectories many times, so instead of scanning
-	// every fsMap key per query (O(files) each call), build a directory → child
-	// directories index once up front and serve lookups from it.
+	// @typescript/vfs's createSystem stubs getDirectories to return [] and uses
+	// an O(files) `directoryExists`, both of which hurt module resolution for
+	// @types subpath exports (e.g. react-dom/client → @types/react-dom/...).
+	// Build a directory → child directories index once and serve both lookups
+	// from it. The index is captured by reference so the session can mutate it
+	// as project files are added.
 	const directoryIndex = buildDirectoryIndex(fsMap);
 	system.getDirectories = (directory: string): string[] => {
-		const key =
-			directory.length > 1 && directory.endsWith("/")
-				? directory.slice(0, -1)
-				: directory;
-		const children = directoryIndex.get(key === "" ? "/" : key);
+		const children = directoryIndex.get(normalizeDirKey(directory));
 		return children ? [...children] : [];
 	};
+	system.directoryExists = (directory: string): boolean =>
+		directoryIndex.has(normalizeDirKey(directory));
 
 	const env = createVirtualTypeScriptEnvironment(
 		system,
@@ -439,5 +494,5 @@ export async function createTypeCheckerEnv(
 		compilerOptions,
 	);
 
-	return { env, fsMap, rootFiles, libMap };
+	return { env, fsMap, rootFiles, directoryIndex };
 }
