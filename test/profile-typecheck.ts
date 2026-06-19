@@ -31,11 +31,12 @@ import { getProjectRoot, install, readDepsFromPackageJson } from "../src/install
 import {
 	createTypecheckFn,
 	loadLibFilesFromCDN,
+	loadTsConfig,
 	RENDER_LIBS,
 	summarizeDiagnostics,
+	type TypecheckArgs,
 	type TypecheckFn,
 } from "../src/typecheck";
-import { loadTsConfig } from "../src/typecheck";
 import type { NodeUnionFs } from "./helpers";
 import { loadFixture, type Workspace } from "./helpers";
 
@@ -214,7 +215,11 @@ async function run(): Promise<void> {
 
 		// ── Filesystem size ───────────────────────────────────────────────
 		banner("Filesystem — what each typecheck call must enumerate");
-		const fsStats = await measureFs(ws.fs);
+		const [fsStats, fsReadTime] = await timed(() => measureFs(ws.fs));
+		info(
+			"read-all time (extraction proxy)",
+			`${ms(fsReadTime)} — paid on every call by extractFilesToMap`,
+		);
 		info("total paths", fsStats.totalPaths);
 		info(
 			"relevant files",
@@ -253,52 +258,72 @@ async function run(): Promise<void> {
 		// one-time CDN fetch and isolate the extract + program-build + check cost.
 		const typecheck: TypecheckFn = createTypecheckFn({ libMap });
 
-		const baseArgs = {
-			fs: ws.fs,
-			mode: "render" as const,
-			compilerOptions,
-		};
+		// Warm up JIT / first program build so the first measured config isn't
+		// unfairly penalized.
+		const warmup = await typecheck({ fs: ws.fs, mode: "render", compilerOptions });
+		info("warmup errors", summarizeDiagnostics(warmup.diagnostics).errorCount);
 
-		const expectClean = (count: number, where: string): void => {
-			if (count > 0) {
-				console.warn(`   ⚠ ${where}: expected 0 errors, got ${count}`);
+		// Compare three configurations on the *same* fixture. The getDirectories
+		// index applies to all of them; skipLibCheck and includeSuggestions are
+		// toggled here so each effect can be read independently.
+		const configs: Array<{ label: string; args: TypecheckArgs }> = [
+			{
+				label: "A. baseline    (skipLibCheck=false, suggestions=on)",
+				args: {
+					fs: ws.fs,
+					mode: "render",
+					compilerOptions: { ...compilerOptions, skipLibCheck: false },
+					includeSuggestions: true,
+				},
+			},
+			{
+				label: "B. skipLibCheck (skipLibCheck=true,  suggestions=on)",
+				args: {
+					fs: ws.fs,
+					mode: "render",
+					compilerOptions: { ...compilerOptions, skipLibCheck: true },
+					includeSuggestions: true,
+				},
+			},
+			{
+				label: "C. errors-only  (skipLibCheck=true,  suggestions=off)",
+				args: {
+					fs: ws.fs,
+					mode: "render",
+					compilerOptions: { ...compilerOptions, skipLibCheck: true },
+					includeSuggestions: false,
+				},
+			},
+		];
+
+		for (const { label, args } of configs) {
+			banner(label);
+
+			// Warm runs (identical input) — steady-state per-call cost.
+			const warmSamples: number[] = [];
+			let errors = 0;
+			for (let i = 0; i < WARM_RUNS; i++) {
+				const [result, t] = await timed(() => typecheck(args));
+				warmSamples.push(t);
+				errors = summarizeDiagnostics(result.diagnostics).errorCount;
 			}
-		};
+			info("errors", errors);
+			reportStats("warm", summarize(warmSamples));
 
-		// ── Cold run ──────────────────────────────────────────────────────
-		banner("Cold run — first typecheck (program built from scratch)");
-		const [coldResult, coldTime] = await timed(() => typecheck(baseArgs));
-		const coldSummary = summarizeDiagnostics(coldResult.diagnostics);
-		info("cold typecheck", ms(coldTime));
-		info("errors / warnings", `${coldSummary.errorCount} / ${coldSummary.warningCount}`);
-		expectClean(coldSummary.errorCount, "cold run");
-
-		// ── Warm runs (identical input) ───────────────────────────────────
-		banner("Warm runs — repeat identical input (steady-state per call)");
-		const warmSamples: number[] = [];
-		for (let i = 0; i < WARM_RUNS; i++) {
-			const [, t] = await timed(() => typecheck(baseArgs));
-			warmSamples.push(t);
-		}
-		reportStats("warm typecheck", summarize(warmSamples));
-
-		// ── Edit-loop runs (mutate a source file each iteration) ──────────
-		banner("Edit-loop runs — mutate one source file, re-check (editor loop)");
-		const editSamples: number[] = [];
-		for (let i = 0; i < EDIT_RUNS; i++) {
-			await ws.fs.writeFile(
-				"/src/edit.ts",
-				`export const REVISION_${i} = ${i};\n` +
-					`export function touched_${i}(x: number): number { return x + ${i}; }\n`,
-			);
-			const [result, t] = await timed(() => typecheck(baseArgs));
-			editSamples.push(t);
-			if (i === EDIT_RUNS - 1) {
-				expectClean(summarizeDiagnostics(result.diagnostics).errorCount, "edit loop");
+			// Edit-loop runs — mutate one source file each iteration (editor loop).
+			const editSamples: number[] = [];
+			for (let i = 0; i < EDIT_RUNS; i++) {
+				await ws.fs.writeFile(
+					"/src/edit.ts",
+					`export const REVISION_${i} = ${i};\n` +
+						`export function touched_${i}(x: number): number { return x + ${i}; }\n`,
+				);
+				const [, t] = await timed(() => typecheck(args));
+				editSamples.push(t);
 			}
+			await ws.fs.rm("/src/edit.ts");
+			reportStats("edit", summarize(editSamples));
 		}
-		await ws.fs.rm("/src/edit.ts");
-		reportStats("edit typecheck", summarize(editSamples));
 
 		banner("Done");
 	} finally {

@@ -325,6 +325,43 @@ function deriveLibFromLoadedFiles(libMap: Map<string, string>): string[] {
 }
 
 /**
+ * Build a `directory -> immediate child directory names` index from the file
+ * map keys. Keys are normalized without a trailing slash (except root "/").
+ *
+ * For a path like `/node_modules/@types/lodash/common/array.d.ts` this records:
+ *   "/" -> "node_modules", "/node_modules" -> "@types",
+ *   "/node_modules/@types" -> "lodash", ".../lodash" -> "common".
+ * The final segment (the file itself) is never recorded as a directory.
+ */
+function buildDirectoryIndex(
+	fsMap: Map<string, string>,
+): Map<string, Set<string>> {
+	const index = new Map<string, Set<string>>();
+	const add = (dir: string, child: string): void => {
+		let set = index.get(dir);
+		if (!set) {
+			set = new Set<string>();
+			index.set(dir, set);
+		}
+		set.add(child);
+	};
+
+	for (const path of fsMap.keys()) {
+		const parts = path.split("/");
+		// parts[0] is "" for absolute paths; the last entry is the file name.
+		let dir = "";
+		for (let i = 1; i < parts.length - 1; i++) {
+			const child = parts[i];
+			if (!child) continue;
+			add(dir === "" ? "/" : dir, child);
+			dir = `${dir}/${child}`;
+		}
+	}
+
+	return index;
+}
+
+/**
  * Create a TypeScript type-checker environment from a TypecheckFileSystem.
  *
  * This extracts files from the filesystem and creates a virtual TypeScript
@@ -354,6 +391,10 @@ export async function createTypeCheckerEnv(
 		...args.compilerOptions,
 		lib: deriveLibFromLoadedFiles(libMap),
 		skipDefaultLibCheck: true,
+		// Default to skipping semantic checks of dependency `.d.ts` files — the
+		// dominant cost when a small project depends on large libraries. Callers
+		// can opt back in by setting `skipLibCheck: false` in their tsconfig.
+		skipLibCheck: args.compilerOptions.skipLibCheck ?? true,
 	};
 
 	// Step 1: Extract files from the filesystem
@@ -377,18 +418,18 @@ export async function createTypeCheckerEnv(
 	// which breaks TypeScript's module resolution for @types subpath
 	// exports (e.g. react-dom/client → @types/react-dom/client.d.ts).
 	// Derive real directory listings from the fsMap keys.
+	//
+	// Module resolution calls getDirectories many times, so instead of scanning
+	// every fsMap key per query (O(files) each call), build a directory → child
+	// directories index once up front and serve lookups from it.
+	const directoryIndex = buildDirectoryIndex(fsMap);
 	system.getDirectories = (directory: string): string[] => {
-		const prefix = directory.endsWith("/") ? directory : `${directory}/`;
-		const dirs = new Set<string>();
-		for (const path of fsMap.keys()) {
-			if (!path.startsWith(prefix)) continue;
-			const rest = path.slice(prefix.length);
-			const slash = rest.indexOf("/");
-			if (slash !== -1) {
-				dirs.add(rest.slice(0, slash));
-			}
-		}
-		return [...dirs];
+		const key =
+			directory.length > 1 && directory.endsWith("/")
+				? directory.slice(0, -1)
+				: directory;
+		const children = directoryIndex.get(key === "" ? "/" : key);
+		return children ? [...children] : [];
 	};
 
 	const env = createVirtualTypeScriptEnvironment(

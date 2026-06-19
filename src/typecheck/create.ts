@@ -75,7 +75,11 @@ export function createTypecheckFn(deps: TypecheckDeps = {}): TypecheckFn {
 			args,
 		);
 
-		const diagnostics = getAllDiagnostics(env, rootFiles);
+		const diagnostics = getAllDiagnostics(
+			env,
+			rootFiles,
+			args.includeSuggestions ?? true,
+		);
 		return { diagnostics, libMap };
 	};
 }

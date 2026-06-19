@@ -17,10 +17,13 @@ import type {
 export function getDiagnostics(
 	env: VirtualTypeScriptEnvironment,
 	fileName: string,
+	includeSuggestions = true,
 ): Diagnostic[] {
 	const syntactic = env.languageService.getSyntacticDiagnostics(fileName);
 	const semantic = env.languageService.getSemanticDiagnostics(fileName);
-	const suggestions = env.languageService.getSuggestionDiagnostics(fileName);
+	const suggestions = includeSuggestions
+		? env.languageService.getSuggestionDiagnostics(fileName)
+		: [];
 
 	const allDiagnostics = [...syntactic, ...semantic, ...suggestions];
 
@@ -54,11 +57,12 @@ export function getDiagnostics(
 export function getAllDiagnostics(
 	env: VirtualTypeScriptEnvironment,
 	rootFiles: string[],
+	includeSuggestions = true,
 ): Map<string, Diagnostic[]> {
 	const results = new Map<string, Diagnostic[]>();
 
 	for (const file of rootFiles) {
-		const diagnostics = getDiagnostics(env, file);
+		const diagnostics = getDiagnostics(env, file, includeSuggestions);
 		if (diagnostics.length > 0) {
 			results.set(file, diagnostics);
 		}

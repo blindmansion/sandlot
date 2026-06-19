@@ -33,6 +33,12 @@ export interface TypecheckArgs {
 	mode?: "run" | "render";
 	/** Compiler options for TypeScript (typically parsed from tsconfig.json) */
 	compilerOptions: ts.CompilerOptions;
+	/**
+	 * Include suggestion diagnostics (the "weak warning" hints surfaced by the
+	 * language service). These add an extra pass per file; set to `false` for a
+	 * faster errors-only check. Defaults to `true`.
+	 */
+	includeSuggestions?: boolean;
 }
 
 /** Result of a typecheck run */
