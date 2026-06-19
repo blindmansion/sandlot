@@ -23,7 +23,6 @@ import {
 } from "../src/typecheck";
 import {
 	createWorkspace,
-	importBundle,
 	loadFixture,
 	runBundle,
 	type Workspace,
@@ -102,11 +101,11 @@ async function demoTypecheck(ws: Workspace): Promise<void> {
 }
 
 async function demoBundleAndRun(ws: Workspace): Promise<void> {
-	banner("3. Bundle + Run — esbuild the fixture, then execute the output");
+	banner("3. Bundle + Run — esbuild the fixture, then execute via the native runner");
 
 	const bundle = createBundleFn(esbuild);
 
-	// --- CommonJS bundle, executed with new Function -----------------------
+	// Bundle as CommonJS so the native runner can hand back module.exports.
 	const cjs = await bundle({
 		fs: ws.fs,
 		entryPoint: "/src/index.ts",
@@ -117,18 +116,9 @@ async function demoBundleAndRun(ws: Workspace): Promise<void> {
 	info("bundle inputs", cjs.inputs);
 	info("native deps", cjs.nativeDependencies.modules);
 
-	const ran = runBundle<{ main(): string }>(cjs.code);
+	const ran = await runBundle<{ main(): string }>(cjs.code);
 	info("runBundle main()", ran.exports.main());
-
-	// --- ESM bundle, executed via dynamic import ---------------------------
-	const esm = await bundle({
-		fs: ws.fs,
-		entryPoint: "/src/index.ts",
-		entryResolveDir: "/",
-		options: { format: "esm", platform: "neutral" },
-	});
-	const imported = await importBundle<{ main(): string }>(esm.code);
-	info("importBundle main()", imported.exports.main());
+	info("ok", ran.ok);
 }
 
 async function demoInstall(): Promise<Workspace | null> {
@@ -184,12 +174,12 @@ async function demoIntegration(ws: Workspace): Promise<void> {
 	});
 	info("bundle inputs (incl. node_modules)", result.inputs);
 
-	const ran = runBundle<{ check(value: unknown): string }>(result.code);
+	const ran = await runBundle<{ check(value: unknown): string }>(result.code);
 	info("check(21)", ran.exports.check(21));
 	info("check('nope')", ran.exports.check("nope"));
 	info(
 		"captured console",
-		ran.logs.map((l) => l.text),
+		ran.log.map((l) => l.text),
 	);
 }
 

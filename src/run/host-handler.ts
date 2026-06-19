@@ -14,7 +14,6 @@
  */
 
 import type { Transferable } from "bun";
-import { joinOutputLines } from "./cli-output";
 import { createConsoleHostFunctions } from "../host-functions/console";
 import { generateGuestPreamble } from "./guest-preamble";
 import type {
@@ -27,28 +26,12 @@ import type {
 	Transport,
 	WorkerTagged,
 } from "./protocol";
-import { mergeHostFunctions } from "./shared";
-import type { HostFunction, LogEntry, LogLevel, RunCodeResult } from "./types";
-
-const STDOUT_LEVELS: LogLevel[] = ["log", "info", "debug"];
-const STDERR_LEVELS: LogLevel[] = ["warn", "error"];
+import { buildResult, mergeHostFunctions } from "./shared";
+import type { HostFunction, LogEntry, RunCodeResult, RunError } from "./types";
 
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
-
-/** Build the final RunCodeResult from collected logs and an exit code. */
-function buildResult(log: LogEntry[], exitCode: number): RunCodeResult {
-	const stdout = joinOutputLines(
-		log.filter((e) => STDOUT_LEVELS.includes(e.level)).map((e) => e.text),
-	);
-
-	const stderr = joinOutputLines(
-		log.filter((e) => STDERR_LEVELS.includes(e.level)).map((e) => e.text),
-	);
-
-	return { exitCode, stdout, stderr, log };
-}
 
 /** Build a host function lookup table keyed by dot-joined path. */
 export function buildRegistry(
@@ -197,11 +180,15 @@ class Session {
 		});
 	}
 
-	/** Resolve the session's result promise. Idempotent. */
-	complete(exitCode: number): void {
+	/**
+	 * Resolve the session's result promise. Idempotent.
+	 *
+	 * Passing an `error` marks the run as failed; omitting it marks success.
+	 */
+	complete(error?: RunError): void {
 		if (this.resolved) return;
 		this.resolved = true;
-		this._resolve(buildResult(this.log, exitCode));
+		this._resolve(buildResult(this.log, error));
 	}
 }
 
@@ -264,13 +251,13 @@ export class HostSessionManager {
 
 	/**
 	 * Terminate a worker. If the session is still active, its result
-	 * promise resolves with exit code 137 (killed).
+	 * promise resolves as a failure with a "terminated" error.
 	 */
 	kill(workerId: string): void {
 		this.transport.send({ type: "kill", workerId });
 		const session = this.sessions.get(workerId);
 		if (session) {
-			session.complete(137);
+			session.complete({ message: "Worker terminated", name: "KilledError" });
 			this.sessions.delete(workerId);
 		}
 	}
@@ -337,7 +324,9 @@ export class HostSessionManager {
 				break;
 
 			case "done":
-				session.complete(msg.exitCode);
+				session.complete(
+					msg.ok ? undefined : (msg.error ?? { message: "Execution failed" }),
+				);
 				this.sessions.delete(msg.workerId);
 				break;
 		}

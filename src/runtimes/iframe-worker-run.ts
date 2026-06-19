@@ -212,16 +212,12 @@ function __handleSpawn(message) {
 		worker = new Worker(blobUrl);
 	} catch (error) {
 		if (blobUrl) URL.revokeObjectURL(blobUrl);
-		__hostTransport.send({
-			type: "console",
-			workerId,
-			level: "error",
-			text: error instanceof Error ? error.message : String(error)
-		});
+		const message = error instanceof Error ? error.message : String(error);
 		__hostTransport.send({
 			type: "done",
 			workerId,
-			exitCode: 1
+			ok: false,
+			error: { message, name: error instanceof Error ? error.name : "Error" }
 		});
 		return;
 	}
@@ -237,15 +233,10 @@ function __handleSpawn(message) {
 
 	worker.onerror = (event) => {
 		__hostTransport.send({
-			type: "console",
-			workerId,
-			level: "error",
-			text: event.message || "Worker error"
-		});
-		__hostTransport.send({
 			type: "done",
 			workerId,
-			exitCode: 1
+			ok: false,
+			error: { message: event.message || "Worker error", name: "WorkerError" }
 		});
 		__cleanupWorker(workerId);
 	};
@@ -260,7 +251,8 @@ function __handleKill(message) {
 		__hostTransport.send({
 			type: "done",
 			workerId: message.workerId,
-			exitCode: 137
+			ok: false,
+			error: { message: "Worker terminated", name: "KilledError" }
 		});
 	}
 }
@@ -290,15 +282,13 @@ __hostTransport.onMessage((message) => {
 	} catch (error) {
 		if ("workerId" in message) {
 			__hostTransport.send({
-				type: "console",
-				workerId: message.workerId,
-				level: "error",
-				text: error instanceof Error ? error.message : String(error)
-			});
-			__hostTransport.send({
 				type: "done",
 				workerId: message.workerId,
-				exitCode: 1
+				ok: false,
+				error: {
+					message: error instanceof Error ? error.message : String(error),
+					name: error instanceof Error ? error.name : "Error"
+				}
 			});
 		} else {
 			__sendToHost({

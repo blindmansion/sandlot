@@ -92,8 +92,10 @@ export interface ConsoleMessage {
  */
 export interface DoneMessage {
 	type: "done";
-	/** 0 for success, non-zero for failure. */
-	exitCode: number;
+	/** True if the guest code ran to completion without throwing. */
+	ok: boolean;
+	/** The error that terminated execution, present only when `ok` is false. */
+	error?: { message: string; name?: string };
 }
 
 /**

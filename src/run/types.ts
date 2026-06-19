@@ -185,15 +185,34 @@ export interface LogEntry {
 	text: string;
 }
 
+/**
+ * A structured-clone-safe description of an error that terminated execution.
+ *
+ * Carries the same shape on both sides of a cross-boundary runner, so the
+ * host can reconstruct enough of the failure to report it. The `stack` is
+ * only available in same-process (native) execution.
+ */
+export interface RunError {
+	message: string;
+	name?: string;
+	stack?: string;
+}
+
+/**
+ * The result of executing bundled code.
+ *
+ * This is deliberately presentation-agnostic: it captures *what happened*
+ * (the ordered console log, and whether execution succeeded) but not how to
+ * render it. CLI-style concerns (stdout/stderr streams, exit codes) live in
+ * the formatting layer (`src/format`), not here.
+ */
 export interface RunCodeResult {
-	/** Exit code: 0 for success, non-zero for failure */
-	exitCode: number;
-	/** Captured stdout (console.log, console.info, console.debug) */
-	stdout: string;
-	/** Captured stderr (console.error, console.warn) */
-	stderr: string;
-	/** All log entries in time order, for interleaved display */
+	/** True if the code ran to completion without throwing. */
+	ok: boolean;
+	/** All log entries in time order, for interleaved display. */
 	log: LogEntry[];
+	/** The error that terminated execution, present only when `ok` is false. */
+	error?: RunError;
 }
 
 /**

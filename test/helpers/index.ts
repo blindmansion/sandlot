@@ -6,9 +6,6 @@ export {
 } from "./harness";
 export { NodeUnionFs, type UnionFileStat } from "./node-fs";
 export {
-	type ConsoleEntry,
-	importBundle,
-	type RunCjsOptions,
 	type RunOptions,
 	type RunResult,
 	runBundle,

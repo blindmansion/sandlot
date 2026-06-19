@@ -2,26 +2,27 @@
  * Shared utilities for RunFn implementations.
  */
 
-import { joinOutputLines } from "./cli-output";
-import type { HostFunction, LogEntry, LogLevel, RunCodeResult } from "./types";
-
-const STDOUT_LEVELS: LogLevel[] = ["log", "info", "debug"];
-const STDERR_LEVELS: LogLevel[] = ["warn", "error"];
+import type { HostFunction, LogEntry, RunCodeResult, RunError } from "./types";
 
 /**
- * Build a {@link RunCodeResult} from a log and exit code.
+ * Build a {@link RunCodeResult} from a captured log and an optional error.
  *
- * Splits log entries into stdout (log/info/debug) and stderr (warn/error).
+ * The presence of an `error` is what marks a run as failed — `ok` is derived
+ * from it. Rendering the log into CLI streams is the formatting layer's job.
  */
-export function buildResult(log: LogEntry[], exitCode: number): RunCodeResult {
-	const stdout = joinOutputLines(
-		log.filter((e) => STDOUT_LEVELS.includes(e.level)).map((e) => e.text),
-	);
-	const stderr = joinOutputLines(
-		log.filter((e) => STDERR_LEVELS.includes(e.level)).map((e) => e.text),
-	);
+export function buildResult(
+	log: LogEntry[],
+	error?: RunError,
+): RunCodeResult {
+	return { ok: !error, log, error };
+}
 
-	return { exitCode, stdout, stderr, log };
+/** Normalize an unknown thrown value into a structured {@link RunError}. */
+export function toRunError(err: unknown): RunError {
+	if (err instanceof Error) {
+		return { message: err.message, name: err.name, stack: err.stack };
+	}
+	return { message: String(err) };
 }
 
 /**

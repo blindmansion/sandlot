@@ -266,15 +266,16 @@ ${hostResponseHandler}
 		return;
 	}
 	if (msg.type === "exec") {
-		let exitCode = 0;
+		let error;
 		try {
 			await __execute(msg.code);
 		} catch (err) {
-			exitCode = 1;
-			const message = err instanceof Error ? err.message : String(err);
-			if (__globals["console"]) __globals["console"].error(message);
+			error = {
+				message: err instanceof Error ? err.message : String(err),
+				name: err instanceof Error ? err.name : "Error",
+			};
 		}
-		postMessage({ type: "done", exitCode });
+		postMessage({ type: "done", ok: !error, error: error });
 	}
 };`;
 }
