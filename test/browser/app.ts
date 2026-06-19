@@ -12,12 +12,14 @@
  */
 
 import { createBundleFn, createWasmEsbuild } from "../../src/bundle";
+import { createSandHostFunctions } from "../../src/host-functions";
 import {
 	getProjectRoot,
 	install,
 	readDepsFromPackageJson,
 } from "../../src/install";
 import { MemoryUnionFs } from "../../src/memory-fs";
+import { createIframeWorkerRunFn } from "../../src/runtimes/iframe-worker-run";
 import {
 	createTypecheckSession,
 	summarizeDiagnostics,
@@ -179,7 +181,123 @@ async function bundleSection(
 }
 
 // ---------------------------------------------------------------------------
-// Section 3 — Install + integration (network: npm registry)
+// Section 3 — Run (sandboxed iframe + Worker, network: esbuild-wasm binary)
+// ---------------------------------------------------------------------------
+
+/**
+ * Bundle a snippet and execute it through the iframe worker runner.
+ *
+ * ESM format is used so the snippet can rely on top-level `await` (needed for
+ * host-function round-trips); the guest preamble runs it inside an async IIFE.
+ */
+async function bundleAndRun(
+	fs: MemoryUnionFs,
+	bundle: ReturnType<typeof createBundleFn>,
+	run: ReturnType<typeof createIframeWorkerRunFn>,
+	path: string,
+	source: string,
+	hostFunctions?: ReturnType<typeof createSandHostFunctions>,
+) {
+	await fs.writeFile(path, source);
+	const { code } = await bundle({
+		fs,
+		entryPoint: path,
+		entryResolveDir: "/",
+		options: { format: "esm", platform: "neutral" },
+	});
+	return run({ code, hostFunctions });
+}
+
+async function runnerSection(
+	fs: MemoryUnionFs,
+	bundle: ReturnType<typeof createBundleFn>,
+): Promise<Check[]> {
+	const section = "run";
+	const checks: Check[] = [];
+
+	const iframe = document.createElement("iframe");
+	iframe.style.display = "none";
+	document.body.appendChild(iframe);
+	const run = createIframeWorkerRunFn(iframe);
+
+	try {
+		// 1. Execute bundled code in the worker and capture console output.
+		const ran = await bundleAndRun(
+			fs,
+			bundle,
+			run,
+			"/src/task.ts",
+			'console.log("hello from the worker");\n' +
+				"console.log(`sum = ${19 + 23}`);\n" +
+				"export {};\n",
+		);
+		const lines = ran.log.map((l) => l.text);
+		const captured =
+			ran.ok &&
+			lines.some((t) => t.includes("hello from the worker")) &&
+			lines.some((t) => t.includes("sum = 42"));
+		checks.push({
+			section,
+			label: "ran bundled code in a sandboxed iframe worker",
+			status: captured ? "pass" : "fail",
+			detail: lines.join(" | ") || ran.error?.message || "(no output)",
+		});
+
+		// 2. Bridge a Sand.fs host call from the guest back to the host.
+		const expectedLen = (await fs.readFile("/src/math.ts")).length;
+		const hostRan = await bundleAndRun(
+			fs,
+			bundle,
+			run,
+			"/src/host-task.ts",
+			'const text = await Sand.fs.readFile("/src/math.ts");\n' +
+				'console.log(`math.ts length ${text.length}`);\n' +
+				"export {};\n",
+			createSandHostFunctions({ fs }),
+		);
+		const bridged =
+			hostRan.ok &&
+			hostRan.log.some((l) => l.text.includes(`math.ts length ${expectedLen}`));
+		checks.push({
+			section,
+			label: "bridged a Sand.fs host call across the iframe boundary",
+			status: bridged ? "pass" : "fail",
+			detail:
+				hostRan.log.map((l) => l.text).join(" | ") ||
+				hostRan.error?.message ||
+				"(no output)",
+		});
+
+		// 3. A thrown error surfaces as a failed run, not a crash.
+		const threw = await bundleAndRun(
+			fs,
+			bundle,
+			run,
+			"/src/throws.ts",
+			'throw new Error("boom from worker");\nexport {};\n',
+		);
+		const reported =
+			!threw.ok && (threw.error?.message.includes("boom from worker") ?? false);
+		checks.push({
+			section,
+			label: "reports a thrown error as a failed run",
+			status: reported ? "pass" : "fail",
+			detail: threw.error
+				? `${threw.error.name ?? "Error"}: ${threw.error.message}`
+				: `ok=${threw.ok}, no error captured`,
+		});
+	} catch (error) {
+		const { status, detail } = classifyError(error);
+		checks.push({ section, label: "iframe worker runner", status, detail });
+	} finally {
+		iframe.remove();
+	}
+
+	return checks;
+}
+
+// ---------------------------------------------------------------------------
+// Section 4 — Install + integration (network: npm registry)
 // ---------------------------------------------------------------------------
 
 async function installSection(
@@ -305,6 +423,7 @@ async function main(): Promise<void> {
 	const sections: Array<() => Promise<Check[]>> = [
 		() => typecheckSection(fs),
 		() => bundleSection(fs, bundle),
+		() => runnerSection(fs, bundle),
 		() => installSection(fs, bundle),
 	];
 
