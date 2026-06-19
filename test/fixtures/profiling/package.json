@@ -1,0 +1,14 @@
+{
+  "name": "profiling-fixture",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "dependencies": {
+    "lodash": "^4.17.21",
+    "rxjs": "^7.8.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/lodash": "^4.17.7"
+  }
+}
