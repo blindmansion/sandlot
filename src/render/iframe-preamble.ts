@@ -220,10 +220,42 @@ async function __execute(code) {
 	await __fn(...paramValues);
 }
 
+async function __evaluate(code, args) {
+	const module = { exports: {} };
+	const paramNames = ["module", "exports", "__args"];
+	const paramValues = [module, module.exports, args];
+	for (const [name, value] of Object.entries(__globals)) {
+		paramNames.push(name);
+		paramValues.push(value);
+	}
+	const __fn = new Function(
+		...paramNames,
+		"return (async () => {\\n" + __stripExports(code) + "\\n})();"
+	);
+	return await __fn(...paramValues);
+}
+
 window.addEventListener("message", async (event) => {
 	const msg = event.data;
 	if (!msg || msg.__channelId !== ${channelIdStr}) return;
 ${hostResponseHandler}
+	if (msg.type === "eval") {
+		let result, error;
+		try {
+			result = await __evaluate(msg.code, msg.args || []);
+		} catch (err) {
+			error = {
+				message: err instanceof Error ? err.message : String(err),
+				name: err instanceof Error ? err.name : "Error",
+			};
+		}
+		try {
+			window.parent.postMessage({ type: "eval-result", evalId: msg.evalId, result: result, error: error, __channelId: ${channelIdStr} }, "*");
+		} catch (postErr) {
+			window.parent.postMessage({ type: "eval-result", evalId: msg.evalId, error: { message: "Result is not serializable: " + (postErr instanceof Error ? postErr.message : String(postErr)), name: "DataCloneError" }, __channelId: ${channelIdStr} }, "*");
+		}
+		return;
+	}
 	if (msg.type === "callback-invoke") {
 		const cb = __callbacks.get(msg.callbackId);
 		if (cb) cb.apply(null, msg.args);

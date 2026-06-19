@@ -52,6 +52,45 @@ export interface ExecMessage {
 }
 
 /**
+ * Host → Iframe (render): evaluate code inside the already-mounted iframe
+ * realm and return its value.
+ *
+ * Distinct from {@link ExecMessage}: `exec` is the one-shot mount that ends
+ * with a {@link DoneMessage}, whereas `eval` can be issued repeatedly against
+ * a live render and each is answered by an {@link EvalResultMessage} correlated
+ * by `evalId`.
+ */
+export interface EvalMessage {
+	type: "eval";
+	/** Unique evaluation identifier (incrementing counter). */
+	evalId: number;
+	/**
+	 * JavaScript to run. Treated as an async function body that may `return`
+	 * a value and may reference `__args`.
+	 */
+	code: string;
+	/** Arguments exposed to the evaluated code as `__args` (structured-cloneable). */
+	args: unknown[];
+}
+
+/**
+ * Iframe (render) → Host: the result (or error) of an {@link EvalMessage}.
+ *
+ * `result` is present on success (return-by-value, structured-cloned); `error`
+ * is present when the evaluated code threw or its return value was not
+ * serializable.
+ */
+export interface EvalResultMessage {
+	type: "eval-result";
+	/** The evalId from the corresponding EvalMessage. */
+	evalId: number;
+	/** The returned value (present on success). */
+	result?: unknown;
+	/** Error info (present on failure). */
+	error?: { message: string; name?: string };
+}
+
+/**
  * Worker → Orchestrator: a host function call from the guest code.
  */
 export interface HostCallMessage {

@@ -341,6 +341,38 @@ async function bundleAndRender(
 	}
 }
 
+/**
+ * Mount a frontend snippet and return the *open* render handle (the mount
+ * result is awaited, but the iframe is left alive so the caller can
+ * `evaluate` against it). The caller is responsible for `handle.close()`.
+ */
+async function mountForEvaluate(
+	fs: MemoryUnionFs,
+	bundle: ReturnType<typeof createBundleFn>,
+	render: ReturnType<typeof createIframeRenderFn>,
+	path: string,
+	source: string,
+	options?: {
+		css?: string;
+		hostFunctions?: ReturnType<typeof createSandHostFunctions>;
+	},
+) {
+	await fs.writeFile(path, source);
+	const { code } = await bundle({
+		fs,
+		entryPoint: path,
+		entryResolveDir: "/",
+		options: { format: "esm", platform: "neutral" },
+	});
+	const handle = render({
+		code,
+		css: options?.css,
+		hostFunctions: options?.hostFunctions,
+	});
+	await handle.result;
+	return handle;
+}
+
 async function renderSection(
 	fs: MemoryUnionFs,
 	bundle: ReturnType<typeof createBundleFn>,
@@ -439,6 +471,108 @@ async function renderSection(
 				? `${threw.error.name ?? "Error"}: ${threw.error.message}`
 				: `ok=${threw.ok}, no error captured`,
 		});
+
+		// 5. evaluate() runs JS inside a live, already-mounted iframe and can
+		// read/mutate its DOM, call host functions, and take args.
+		const expectedMathLen = (await fs.readFile("/src/math.ts")).length;
+		const handle = await mountForEvaluate(
+			fs,
+			bundle,
+			render,
+			"/src/eval-view.ts",
+			'document.getElementById("root").textContent = "initial";\n' +
+			"export {};\n",
+			{ hostFunctions: createSandHostFunctions({ fs }) },
+		);
+		try {
+			const value = await handle.evaluate<number>("return 19 + 23");
+			checks.push({
+				section,
+				label: "evaluate returns a computed value",
+				status: value.ok && value.value === 42 ? "pass" : "fail",
+				detail: value.ok ? `value=${value.value}` : (value.error?.message ?? "no result"),
+			});
+
+			const readDom = await handle.evaluate<string>(
+				'return document.getElementById("root").textContent',
+			);
+			checks.push({
+				section,
+				label: "evaluate reads live DOM from the mount",
+				status: readDom.ok && readDom.value === "initial" ? "pass" : "fail",
+				detail: readDom.ok ? `text=${readDom.value}` : (readDom.error?.message ?? "no result"),
+			});
+
+			await handle.evaluate(
+				'document.getElementById("root").textContent = "changed"; return true',
+			);
+			const reread = await handle.evaluate<string>(
+				'return document.getElementById("root").textContent',
+			);
+			checks.push({
+				section,
+				label: "evaluate mutates DOM and the change persists",
+				status: reread.ok && reread.value === "changed" ? "pass" : "fail",
+				detail: reread.ok ? `text=${reread.value}` : (reread.error?.message ?? "no result"),
+			});
+
+			const hostCall = await handle.evaluate<number>(
+				'return (await Sand.fs.readFile("/src/math.ts")).length',
+			);
+			checks.push({
+				section,
+				label: "evaluate can call a Sand.fs host function",
+				status: hostCall.ok && hostCall.value === expectedMathLen ? "pass" : "fail",
+				detail: hostCall.ok ? `length=${hostCall.value}` : (hostCall.error?.message ?? "no result"),
+			});
+
+			const withArgs = await handle.evaluate<number>(
+				"return __args[0] + __args[1]",
+				1,
+				2,
+			);
+			checks.push({
+				section,
+				label: "evaluate forwards args via __args",
+				status: withArgs.ok && withArgs.value === 3 ? "pass" : "fail",
+				detail: withArgs.ok ? `sum=${withArgs.value}` : (withArgs.error?.message ?? "no result"),
+			});
+
+			const evalThrew = await handle.evaluate('throw new Error("eval boom")');
+			checks.push({
+				section,
+				label: "evaluate reports a thrown error",
+				status:
+					!evalThrew.ok && (evalThrew.error?.message.includes("eval boom") ?? false)
+						? "pass"
+						: "fail",
+				detail: evalThrew.error?.message ?? `ok=${evalThrew.ok}`,
+			});
+
+			const notSerializable = await handle.evaluate("return document.body");
+			checks.push({
+				section,
+				label: "evaluate reports a non-serializable result",
+				status: !notSerializable.ok ? "pass" : "fail",
+				detail: notSerializable.error?.message ?? `ok=${notSerializable.ok}`,
+			});
+
+			// 6. evaluate after close resolves a "Render closed" error (no hang).
+			const evalPromise = handle.evaluate("return 1");
+			handle.close();
+			const afterClose = await evalPromise;
+			checks.push({
+				section,
+				label: "evaluate after close resolves without hanging",
+				status:
+					!afterClose.ok && (afterClose.error?.message.includes("closed") ?? false)
+						? "pass"
+						: "fail",
+				detail: afterClose.error?.message ?? `ok=${afterClose.ok}`,
+			});
+		} finally {
+			handle.close();
+		}
 	} catch (error) {
 		const { status, detail } = classifyError(error);
 		checks.push({ section, label: "iframe render", status, detail });
@@ -633,6 +767,30 @@ async function liveDemoSection(
 				? "rendered"
 				: (result.error?.message ?? "render failed"),
 		});
+		// Drive the live widget via evaluate(): reach into the rendered Lit
+		// component's shadow DOM, click its counter button, and read the new
+		// label back. This proves evaluate can interact with stateful UI in an
+		// already-mounted iframe.
+		if (result.ok) {
+			const clicked = await handle.evaluate<string>(
+				'const counter = document\n' +
+				'  .querySelector("app-root")\n' +
+				'  .shadowRoot.querySelector("counter-button");\n' +
+				'const btn = counter.shadowRoot.querySelector("button");\n' +
+				"btn.click();\n" +
+				"await counter.updateComplete;\n" +
+				"return counter.shadowRoot.querySelector('button').textContent.trim();",
+			);
+			checks.push({
+				section,
+				label: "evaluate drove the live widget (clicked the counter)",
+				status: clicked.ok ? "pass" : "fail",
+				detail: clicked.ok
+					? `counter now reads "${clicked.value}"`
+					: (clicked.error?.message ?? "evaluate failed"),
+			});
+		}
+
 		// Intentionally leave the handle open and the iframe in the page so the
 		// widget stays live and interactive.
 		setStatus(

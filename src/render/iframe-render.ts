@@ -26,13 +26,19 @@ import type {
 	CallbackReleaseMessage,
 	ConsoleMessage,
 	DoneMessage,
+	EvalResultMessage,
 	HostCallMessage,
 } from "../run/protocol";
 import { buildResult, mergeHostFunctions } from "../run/shared";
 import type { LogEntry, RunError } from "../run/types";
 import { generateIframePreamble } from "./iframe-preamble";
 import { createIframeTransport } from "./iframe-transport";
-import type { RenderFn, RenderHandle, RenderResult } from "./types";
+import type {
+	EvaluateResult,
+	RenderFn,
+	RenderHandle,
+	RenderResult,
+} from "./types";
 
 let nextChannelId = 0;
 
@@ -121,6 +127,18 @@ export function createIframeRenderFn(
 			resultResolve(buildResult(log, error));
 		}
 
+		// Evaluate request/response correlation state.
+		let closed = false;
+		let nextEvalId = 0;
+		const pendingEvals = new Map<number, (r: EvaluateResult) => void>();
+
+		// The preamble's "ready" message gates evaluation: a call issued before
+		// the iframe handler is installed waits here instead of being dropped.
+		let readyResolve!: () => void;
+		const readyPromise = new Promise<void>((resolve) => {
+			readyResolve = resolve;
+		});
+
 		// Wire up host-side message dispatch.
 		// The iframe preamble sends a "ready" message once its message
 		// handler is installed, which is the reliable signal to send exec
@@ -137,10 +155,12 @@ export function createIframeRenderFn(
 				| { type: "ready" }
 				| HostCallMessage
 				| ConsoleMessage
-				| DoneMessage;
+				| DoneMessage
+				| EvalResultMessage;
 
 			switch (msg.type) {
 				case "ready":
+					readyResolve();
 					if (!execSent) {
 						execSent = true;
 						transport.send({ type: "exec", code: args.code });
@@ -184,6 +204,19 @@ export function createIframeRenderFn(
 							: (msg.error ?? { message: "Execution failed" }),
 					);
 					break;
+
+				case "eval-result": {
+					const resolve = pendingEvals.get(msg.evalId);
+					if (resolve) {
+						pendingEvals.delete(msg.evalId);
+						resolve({
+							ok: !msg.error,
+							value: msg.result,
+							error: msg.error,
+						});
+					}
+					break;
+				}
 			}
 		});
 
@@ -195,9 +228,31 @@ export function createIframeRenderFn(
 			getLog() {
 				return [...log];
 			},
+			async evaluate<T = unknown>(
+				code: string,
+				...evalArgs: unknown[]
+			): Promise<EvaluateResult<T>> {
+				await readyPromise;
+				if (closed) {
+					return { ok: false, error: { message: "Render closed" } };
+				}
+				const evalId = nextEvalId++;
+				return new Promise<EvaluateResult<T>>((resolve) => {
+					pendingEvals.set(
+						evalId,
+						resolve as (r: EvaluateResult) => void,
+					);
+					transport.send({ type: "eval", evalId, code, args: evalArgs });
+				});
+			},
 			close() {
+				closed = true;
 				transport.close();
 				complete();
+				for (const resolve of pendingEvals.values()) {
+					resolve({ ok: false, error: { message: "Render closed" } });
+				}
+				pendingEvals.clear();
 				activeHandle = null;
 			},
 		};
