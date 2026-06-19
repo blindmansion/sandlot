@@ -1,0 +1,9 @@
+{
+  "name": "app-with-dep",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "dependencies": {
+    "is-number": "7.0.0"
+  }
+}
