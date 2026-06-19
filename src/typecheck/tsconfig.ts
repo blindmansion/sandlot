@@ -8,7 +8,7 @@
 
 import ts from "typescript";
 import type { TypecheckFileSystem } from "./fs";
-import { findUp } from "./util";
+import { findUp } from "../util";
 
 export interface LoadTsConfigContext {
 	cwd: string;
