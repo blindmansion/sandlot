@@ -44,6 +44,10 @@ agent-browser eval "await sandlot.install()"
 agent-browser eval "await sandlot.run('/src/index.ts')"     # bundle + run in a worker iframe
 agent-browser eval "await sandlot.render('/src/view.ts')"   # bundle + mount into visible iframe
 agent-browser screenshot /tmp/render.png                    # visually verify the rendered view
+
+# Inspect or drive the rendered view from the host (runs JS *inside* the iframe)
+agent-browser eval "await sandlot.evaluate('return document.getElementById(\"root\").innerHTML')"
+agent-browser eval "await sandlot.evaluate('document.querySelector(\"button\").click(); return true')"
 ```
 
 ### `window.sandlot` surface
@@ -57,6 +61,7 @@ All methods are async and return only structured-clone-safe data.
 - `install(specs?)` — install packages (defaults to deps declared in `/package.json`); returns `[{ name, version }]`.
 - `run(entryPoint)` — bundle and execute in a sandboxed worker iframe; returns `{ ok, log, error? }`.
 - `render(entryPoint, options?)` — bundle and mount into the visible iframe; returns `{ ok, log, error? }`.
+- `evaluate(code, ...args)` — run JavaScript *inside* the currently-rendered iframe and return its value; `{ ok, value?, error? }`. The code is an async function body that may `return` a value and reference `__args`, runs with the same `Sand.*` host functions, and shares the rendered view's live DOM/`window`. Requires a prior `render(...)`. This is the way to read or mutate the sandboxed iframe's DOM from the host (see the note below). Non-serializable returns (e.g. a DOM node) come back as `{ ok: false }` with a serialization error.
 - `fixtures()` — list committed fixtures under `test/fixtures/` (e.g. `lit-app`, `react-app`, `basic`).
 - `seedFixture(name, { install? })` — seed a fixture into the in-memory filesystem; pass `{ install: true }` to also install its declared deps. Returns `{ fixture, files, installed? }`.
 - `reset()` — clear the in-memory filesystem (including installed packages) and reset the typecheck session, to switch tasks without reloading the page.
@@ -85,7 +90,7 @@ agent-browser --headed open "http://localhost:4321/sandbox.html?fixture=lit-app&
 Notes:
 
 - Guest code passed to `run`/`render` can call the bridged `Sand.fs.*` host functions (typed via injected ambient declarations, so `typecheck()` sees them).
-- The render/run iframes are sandboxed without `allow-same-origin`, so the parent page cannot read their DOM. Have rendered code `console.log` what it sees (surfaced in the returned `log`), or verify visually with `agent-browser screenshot`.
+- The render/run iframes are sandboxed without `allow-same-origin`, so the parent page cannot read their DOM directly. To inspect or drive a rendered view, use `sandlot.evaluate(...)` (runs JS inside the render iframe and returns serializable values), have rendered code `console.log` what it sees (surfaced in the returned `log`), or verify visually with `agent-browser screenshot`.
 - `bundle()` returns the full `code` string; project the field you need (e.g. `(await sandlot.bundle(...)).inputs`) to keep eval output small.
 - For multi-line or heavily-quoted JS, use `agent-browser eval --stdin` with a heredoc.
 - `eval` evaluates an expression, so `await` only works inside an async wrapper. Either pass a promise expression directly (`agent-browser eval "sandlot.typecheck()"`) or wrap multiple awaits in an async IIFE (`(async () => { ... })()`).

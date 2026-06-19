@@ -44,6 +44,7 @@ import {
 } from "../../src/toolchain/typecheck";
 import type { Diagnostic } from "../../src/toolchain/typecheck";
 import { createIframeRenderFn } from "../../src/render";
+import type { RenderHandle } from "../../src/render";
 import { createIframeWorkerRunFn } from "../../src/runtimes/iframe-worker-run";
 import { MemoryUnionFs } from "../helpers/memory-fs";
 
@@ -92,6 +93,13 @@ interface ExecReport {
 	error?: { message: string; name?: string };
 }
 
+interface EvalReport {
+	ok: boolean;
+	/** The return value of the evaluated code (structured-clone-safe). */
+	value?: unknown;
+	error?: { message: string; name?: string };
+}
+
 interface SandlotFs {
 	read(path: string): Promise<string>;
 	write(path: string, content: string): Promise<void>;
@@ -118,6 +126,17 @@ interface SandlotApi {
 	install(specs?: string[]): Promise<InstallReport[]>;
 	run(entryPoint: string): Promise<ExecReport>;
 	render(entryPoint: string, options?: { css?: string }): Promise<ExecReport>;
+	/**
+	 * Run JavaScript inside the currently-rendered iframe and return its value.
+	 *
+	 * This is the bridge into the sandboxed render iframe (which has no
+	 * `allow-same-origin`, so the parent page can't read its DOM directly).
+	 * The code is an async function body that may `return` a value and
+	 * reference `__args`; it runs with the same `Sand.*` host functions and
+	 * shares the rendered view's live DOM/`window`. Requires a prior
+	 * `render(...)` call. Returns `{ ok, value?, error? }`.
+	 */
+	evaluate(code: string, ...args: unknown[]): Promise<EvalReport>;
 	/** List committed fixtures available on the dev server (e.g. `lit-app`). */
 	fixtures(): Promise<string[]>;
 	/**
@@ -185,6 +204,11 @@ if (!(renderFrameEl instanceof HTMLIFrameElement)) {
 	throw new Error("#render-frame iframe not found in sandbox.html");
 }
 const renderFn = createIframeRenderFn(renderFrameEl);
+
+// The most recent render handle, kept so `evaluate` can run code inside the
+// live rendered iframe. `createIframeRenderFn` tears down the previous render
+// on each new call, so this always points at the currently-visible view.
+let currentRenderHandle: RenderHandle | null = null;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -322,10 +346,29 @@ const sandlot: SandlotApi = {
 			hostFunctions: sandHostFunctions,
 		});
 		// Intentionally leave the handle open so the rendered view stays visible
-		// in the iframe for screenshots. `createIframeRenderFn` tears down the
-		// previous render automatically on the next call.
+		// in the iframe for screenshots and so `evaluate` can run against it.
+		// `createIframeRenderFn` tears down the previous render automatically on
+		// the next call.
+		currentRenderHandle = handle;
 		const result = await handle.result;
 		return toExecReport(result);
+	},
+
+	async evaluate(code, ...args) {
+		if (!currentRenderHandle) {
+			return {
+				ok: false,
+				error: { message: "No active render. Call render(...) first." },
+			};
+		}
+		const result = await currentRenderHandle.evaluate(code, ...args);
+		return {
+			ok: result.ok,
+			...(result.ok ? { value: result.value } : {}),
+			...(result.error
+				? { error: { message: result.error.message, name: result.error.name } }
+				: {}),
+		};
 	},
 
 	async fixtures() {
