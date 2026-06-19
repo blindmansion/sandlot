@@ -73,10 +73,10 @@ All methods are async and return only structured-clone-safe data.
 - `render(entryPoint, options?)` — bundle and mount into the visible iframe, which provides a single `<div id="root">` host element; returns `{ ok, log, error? }`. Entry points should mount their UI into `#root` (e.g. `document.getElementById("root")`).
 - `evaluate(code, ...args)` — run JavaScript *inside* the currently-rendered iframe and return its value; `{ ok, value?, error? }`. The code is an async function body that may `return` a value and reference `__args`, runs with the same `Sand.*` host functions, and shares the rendered view's live DOM/`window`. Requires a prior `render(...)`. This is the way to read or mutate the sandboxed iframe's DOM from the host (see the note below). Non-serializable returns (e.g. a DOM node) come back as `{ ok: false }` with a serialization error — use `evaluateHandle` for those.
 - `evaluateHandle(code, ...args)` — like `evaluate`, but keeps the top-level return value *inside* the iframe and returns an opaque `handle` token (`{ ok, handle?, error? }`) instead of serializing it. Hold the token and pass it back into later `evaluate`/`evaluateHandle` calls as an arg (it is re-hydrated into the live object), then free it with `releaseHandle`. This is the idiomatic way to reference a DOM node or other non-serializable object across calls.
-- `releaseHandle(token)` — release a handle returned by `evaluateHandle`. Handles are also invalidated whenever the render is torn down or replaced (a new `render()` or `reset()`).
+- `releaseHandle(token)` — release a handle returned by `evaluateHandle`. Handles are also invalidated whenever the render is torn down or replaced (a new `render()`, or `reset()`).
 - `fixtures()` — list committed fixtures under `test/fixtures/` (e.g. `lit-app`, `react-app`, `basic`).
 - `seedFixture(name, { install? })` — seed a fixture into the in-memory filesystem; pass `{ install: true }` to also install its declared deps. Returns `{ fixture, files, installed? }`.
-- `reset()` — clear the in-memory filesystem (including installed packages) and reset the typecheck session, to switch tasks without reloading the page.
+- `reset()` — clear the in-memory filesystem (including installed packages), reset the typecheck/bundle sessions, and tear down the current render (blanking the iframe and invalidating its handles), to switch tasks without reloading the page.
 
 ### Seeding from fixtures
 
@@ -105,7 +105,7 @@ Notes:
 - `run` executes in a Web Worker with no DOM; code that touches `document`/`window` fails there. Use `render` for UI and `run` for headless logic.
 - Guest code passed to `run`/`render` can call the bridged `Sand.fs.*` host functions (typed via injected ambient declarations, so `typecheck()` sees them).
 - The render/run iframes are sandboxed without `allow-same-origin`, so the parent page cannot read their DOM directly. To inspect or drive a rendered view, use `sandlot.evaluate(...)` (runs JS inside the render iframe and returns serializable values), have rendered code `console.log` what it sees (surfaced in the returned `log`), or verify visually with `agent-browser screenshot`.
-- `bundle()` returns the full `code` string; project the field you need (e.g. `(await sandlot.bundle(...)).inputs`) to keep eval output small.
+- `bundle()` returns the full `code` string; project the field you need (e.g. `sandlot.bundle(...).then(r => r.inputs)`) to keep eval output small.
 - For multi-line or heavily-quoted JS, use `agent-browser eval --stdin` with a heredoc.
 - `eval` evaluates an expression, so `await` only works inside an async wrapper. Either pass a promise expression directly (`agent-browser eval "sandlot.typecheck()"`) or wrap multiple awaits in an async IIFE (`(async () => { ... })()`).
-- Sessions persist across `eval` calls (the browser daemon stays alive), so state accumulates. Use `await sandlot.reset()` to start clean, or restart the server. If `agent-browser` reconnects to a stale daemon after a version change, run `agent-browser doctor` / `agent-browser --session default close`.
+- Sessions persist across `eval` calls (the browser daemon stays alive), so state accumulates. Use `sandlot.reset()` to start clean, or restart the server. If `agent-browser` reconnects to a stale daemon after a version change, run `agent-browser doctor` / `agent-browser --session default close`.

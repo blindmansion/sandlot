@@ -498,6 +498,14 @@ const sandlot: SandlotApi = {
 		// bound to now-deleted entry points) and reset the typecheck session.
 		await disposeBundleSessions();
 		typecheckSession.invalidate();
+		// Tear down the current render for a true clean slate: close the handle
+		// (kills the transport and invalidates any outstanding evaluate handles)
+		// and blank the visible iframe so the old view doesn't linger.
+		if (currentRenderHandle) {
+			currentRenderHandle.close();
+			currentRenderHandle = null;
+			renderFrameEl.srcdoc = "";
+		}
 		return { removed: topLevel.length };
 	},
 };
