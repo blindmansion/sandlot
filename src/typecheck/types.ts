@@ -24,6 +24,17 @@ export interface TypecheckSessionOptions {
 	mode?: "run" | "render";
 	/** Root files to include in the program (defaults to all project .ts/.tsx). */
 	rootFiles?: string[];
+	/**
+	 * Extra ambient declaration files to inject into the program, keyed by
+	 * virtual path (e.g. `"/__sandlot_globals__.d.ts"`). They live only inside
+	 * the typecheck environment — never written to the caller's filesystem —
+	 * and are always added as root files so their `declare` globals are visible
+	 * to every source file.
+	 *
+	 * Use this to surface host-provided globals (such as the `.d.ts` produced by
+	 * `generateHostFunctionDts`) to the typechecker.
+	 */
+	globalDeclarations?: Map<string, string>;
 	/** Working directory (defaults to "/"). */
 	workingDirectory?: string;
 	/**

@@ -160,6 +160,7 @@ class Session implements TypecheckSession {
 			compilerOptions: this.options.compilerOptions,
 			workingDirectory: this.options.workingDirectory,
 			rootFiles: this.options.rootFiles,
+			globalDeclarations: this.options.globalDeclarations,
 		});
 		this.built = built;
 		this.rootSet = new Set(built.rootFiles);

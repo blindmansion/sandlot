@@ -37,6 +37,12 @@ export interface BuildEnvOptions {
 	compilerOptions: ts.CompilerOptions;
 	workingDirectory?: string;
 	rootFiles?: string[];
+	/**
+	 * Extra ambient declaration files (virtual path -> content) injected into
+	 * the file map and added as root files. See
+	 * {@link TypecheckSessionOptions.globalDeclarations}.
+	 */
+	globalDeclarations?: Map<string, string>;
 }
 
 // ============================================================================
@@ -467,8 +473,21 @@ export async function buildEnv(
 		fsMap.set(path, content);
 	}
 
-	// Step 3: Determine root files
-	const rootFiles = opts.rootFiles || findRootFiles(fsMap, workingDir);
+	// Step 3: Determine root files. Copy so we never mutate the caller's array
+	// (the session pushes/splices `rootFiles` as project files come and go).
+	const rootFiles = opts.rootFiles
+		? [...opts.rootFiles]
+		: findRootFiles(fsMap, workingDir);
+
+	// Step 3b: Inject caller-provided ambient declarations. They exist only in
+	// this environment (not the caller's filesystem) and are always roots so
+	// their `declare` globals are visible to every source file.
+	if (opts.globalDeclarations) {
+		for (const [path, content] of opts.globalDeclarations) {
+			fsMap.set(path, content);
+			if (!rootFiles.includes(path)) rootFiles.push(path);
+		}
+	}
 
 	// Step 4: Create the TypeScript virtual environment
 	const system = createSystem(fsMap);

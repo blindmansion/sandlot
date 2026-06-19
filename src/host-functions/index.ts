@@ -12,6 +12,10 @@ import type { RunFn } from "../run/types";
 import type { UnionFileSystem } from "../types";
 import { createFsHostFunctions } from "./fs";
 
+export {
+	type GenerateDtsOptions,
+	generateHostFunctionDts,
+} from "../run/dts";
 export { createConsoleHostFunctions } from "./console";
 export { createFsHostFunctions } from "./fs";
 
