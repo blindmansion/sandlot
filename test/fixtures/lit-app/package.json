@@ -1,0 +1,9 @@
+{
+  "name": "lit-app-fixture",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "dependencies": {
+    "lit": "^3.2.1"
+  }
+}
