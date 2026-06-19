@@ -16,13 +16,16 @@
  *
  * Drive it from the host:
  *
+ * `eval` evaluates a single expression and auto-awaits a returned promise, so
+ * pass a promise directly (top-level `await` throws a SyntaxError):
+ *
  * ```bash
  * agent-browser open http://localhost:4321/sandbox.html
- * agent-browser eval "await sandlot.ready()"
- * agent-browser eval "await sandlot.fs.seed({'/src/index.ts':'export const x=1'})"
- * agent-browser eval "(await sandlot.typecheck()).errorCount"
- * agent-browser eval "(await sandlot.bundle('/src/index.ts')).inputs"
- * agent-browser eval "await sandlot.render('/src/view.ts')"
+ * agent-browser eval "sandlot.ready()"
+ * agent-browser eval "sandlot.fs.seed({'/src/index.ts':'export const x=1'})"
+ * agent-browser eval "sandlot.typecheck().then(r => r.errorCount)"
+ * agent-browser eval "sandlot.bundle('/src/index.ts').then(r => r.inputs)"
+ * agent-browser eval "sandlot.render('/src/view.ts')"
  * ```
  */
 
@@ -30,7 +33,8 @@ import { createSandHostFunctions } from "../../src/host-functions";
 import { generateHostFunctionDts } from "../../src/run/dts";
 import {
 	type BundleOptions,
-	createBundleFn,
+	type BundleSession,
+	createBundleSession,
 	createWasmEsbuild,
 } from "../../src/toolchain/bundle";
 import {
@@ -168,7 +172,50 @@ declare global {
 
 const fs = new MemoryUnionFs();
 const esbuild = createWasmEsbuild({ wasmURL: ESBUILD_WASM_URL });
-const bundleFn = createBundleFn(esbuild);
+
+// Persistent, incremental bundle sessions keyed by entry point + options, so
+// repeated bundle/run/render calls reuse esbuild's parsed graph and cached
+// module resolution instead of rebuilding cold each time. Like the typecheck
+// session, every fs mutation flows through the `fs` facade and notifies these
+// sessions (changed/deleted) and `install()` invalidates them, so cached
+// resolution can never go stale. `reset()` disposes them all.
+const bundleSessions = new Map<string, BundleSession>();
+
+async function getBundleSession(
+	entryPoint: string,
+	options: BundleOptions,
+): Promise<BundleSession> {
+	const key = JSON.stringify({ entryPoint, options });
+	let session = bundleSessions.get(key);
+	if (!session) {
+		session = await createBundleSession(esbuild, {
+			fs,
+			entryPoint,
+			entryResolveDir: "/",
+			options,
+		});
+		bundleSessions.set(key, session);
+	}
+	return session;
+}
+
+function notifyBundleSessions(kind: "changed" | "deleted", path: string): void {
+	for (const session of bundleSessions.values()) {
+		session[kind](path);
+	}
+}
+
+function invalidateBundleSessions(): void {
+	for (const session of bundleSessions.values()) {
+		session.invalidate();
+	}
+}
+
+async function disposeBundleSessions(): Promise<void> {
+	const sessions = [...bundleSessions.values()];
+	bundleSessions.clear();
+	await Promise.all(sessions.map((session) => session.dispose()));
+}
 
 // Sand.* host functions, shared by run/render so guest code can call Sand.fs.*.
 const sandHostFunctions = createSandHostFunctions({ fs });
@@ -239,6 +286,7 @@ const sandlotFs: SandlotFs = {
 	async write(path, content) {
 		await fs.writeFile(path, content);
 		await typecheckSession.changed(path);
+		notifyBundleSessions("changed", path);
 	},
 	async exists(path) {
 		return fs.exists(path);
@@ -260,11 +308,13 @@ const sandlotFs: SandlotFs = {
 	async rm(path, opts) {
 		await fs.rm(path, opts);
 		await typecheckSession.deleted(path);
+		notifyBundleSessions("deleted", path);
 	},
 	async seed(map) {
 		for (const [path, content] of Object.entries(map)) {
 			await fs.writeFile(path, content);
 			await typecheckSession.changed(path);
+			notifyBundleSessions("changed", path);
 		}
 	},
 	async list() {
@@ -295,17 +345,13 @@ const sandlot: SandlotApi = {
 	},
 
 	async bundle(entryPoint, options) {
-		const result = await bundleFn({
-			fs,
-			entryPoint,
-			entryResolveDir: "/",
-			options: {
-				format: "esm",
-				platform: "browser",
-				target: "es2022",
-				...options,
-			},
+		const session = await getBundleSession(entryPoint, {
+			format: "esm",
+			platform: "browser",
+			target: "es2022",
+			...options,
 		});
+		const result = await session.rebuild();
 		return { code: result.code, css: result.css, inputs: result.inputs };
 	},
 
@@ -317,29 +363,30 @@ const sandlot: SandlotApi = {
 			nodeModulesPath: NODE_MODULES_PATH,
 			projectName: root?.name ?? "sandlot-sandbox",
 		});
-		// node_modules changed out from under the typecheck session.
+		// node_modules changed out from under the typecheck + bundle sessions.
 		typecheckSession.invalidate();
+		invalidateBundleSessions();
 		return installed.map((r) => ({ name: r.name, version: r.version }));
 	},
 
 	async run(entryPoint) {
-		const { code } = await bundleFn({
-			fs,
-			entryPoint,
-			entryResolveDir: "/",
-			options: { format: "esm", platform: "neutral", target: "es2022" },
+		const session = await getBundleSession(entryPoint, {
+			format: "esm",
+			platform: "neutral",
+			target: "es2022",
 		});
+		const { code } = await session.rebuild();
 		const result = await runFn({ code, hostFunctions: sandHostFunctions });
 		return toExecReport(result);
 	},
 
 	async render(entryPoint, options) {
-		const { code, css } = await bundleFn({
-			fs,
-			entryPoint,
-			entryResolveDir: "/",
-			options: { format: "esm", platform: "browser", target: "es2022" },
+		const session = await getBundleSession(entryPoint, {
+			format: "esm",
+			platform: "browser",
+			target: "es2022",
 		});
+		const { code, css } = await session.rebuild();
 		const handle = renderFn({
 			code,
 			css: options?.css ?? css,
@@ -399,7 +446,10 @@ const sandlot: SandlotApi = {
 		for (const name of topLevel) {
 			await fs.rm(`/${name}`, { recursive: true, force: true });
 		}
-		// The whole filesystem changed out from under the typecheck session.
+		// The whole filesystem changed out from under the typecheck + bundle
+		// sessions; drop the bundle sessions entirely (their build contexts are
+		// bound to now-deleted entry points) and reset the typecheck session.
+		await disposeBundleSessions();
 		typecheckSession.invalidate();
 		return { removed: topLevel.length };
 	},
@@ -421,7 +471,7 @@ const autoFixture = params.get("fixture");
 
 if (!autoFixture) {
 	setStatus(
-		"window.sandlot ready. Call `await sandlot.ready()` to warm esbuild, then drive the toolchain. Tip: open ?fixture=<name> to auto-seed a fixture.",
+		"window.sandlot ready. Call `sandlot.ready()` to warm esbuild, then drive the toolchain. Tip: open ?fixture=<name> to auto-seed a fixture.",
 	);
 } else {
 	const autoInstall = params.get("install") === "1";

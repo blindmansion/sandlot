@@ -729,14 +729,8 @@ async function liveDemoSection(
 		});
 
 		setStatus("Bundling the widget…");
-		// Mount into the render iframe's `#root` (the committed fixture targets
-		// `#app`, so we add a tiny entry instead of editing the fixture).
-		await fs.writeFile(
-			"/src/render-entry.ts",
-			'import "./app-root";\n' +
-			'const root = document.getElementById("root");\n' +
-			'if (root) root.appendChild(document.createElement("app-root"));\n',
-		);
+		// The fixture's `/src/index.ts` mounts `<app-root>` into the render
+		// iframe's `#root`, so we can bundle it directly.
 		// Target es2022 (not the default esnext) so esbuild *lowers* the Lit
 		// standard decorators + `accessor` fields into runtime code. The render
 		// path executes via `new Function`, and no JS engine parses the
@@ -744,7 +738,7 @@ async function liveDemoSection(
 		// in place and throw "Invalid or unexpected token" at mount time.
 		const { code, css } = await bundle({
 			fs,
-			entryPoint: "/src/render-entry.ts",
+			entryPoint: "/src/index.ts",
 			entryResolveDir: "/",
 			options: { format: "esm", platform: "browser", target: "es2022" },
 		});
