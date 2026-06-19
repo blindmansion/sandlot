@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "smoke": "bun test/smoke.ts",
-    "profile:typecheck": "bun test/profile-typecheck.ts"
+    "profile:typecheck": "bun test/profile-typecheck.ts",
+    "profile:bundle": "bun test/profile-bundle.ts"
   },
   "devDependencies": {
     "@types/bun": "latest"

@@ -16,7 +16,7 @@ import {
 	parsePackageSpecifier,
 } from "../util";
 import { isNodeBuiltin, normalizeBuiltinName } from "./builtins";
-import type { BundleFileSystem } from "./fs";
+import type { BundleFileStat, BundleFileSystem } from "./fs";
 import type { ResolvedResolutionPolicy, VirtualFileMap } from "./types";
 
 // ---------- Constants ----------
@@ -62,6 +62,94 @@ export function getLoaderFromPath(path: string): esbuild.Loader {
 	return LOADER_MAP[extname(path)] ?? "js";
 }
 
+// ---------- Per-build resolution cache ----------
+
+/**
+ * Memoizes filesystem probes for the duration of a *single* build.
+ *
+ * The resolver asks the same questions over and over across hundreds of imports:
+ * does `<dir>/node_modules/<pkg>` exist, what does this package.json contain, is
+ * `<path>.ts` a file? Because the filesystem cannot change mid-build, caching
+ * those answers is always correct and avoids re-issuing the (async, and on the
+ * wasm path, boundary-crossing) `BundleFileSystem` calls.
+ *
+ * This is deliberately scoped to one build and never persisted: cross-build or
+ * cross-backing caching is the filesystem implementation's concern, not ours, so
+ * there is nothing to invalidate here.
+ */
+interface ResolveCache {
+	/** path → stat, or `null` when the path does not exist. */
+	stat: Map<string, BundleFileStat | null>;
+	/** package dir → parsed package.json, or `null` when absent/unparseable. */
+	pkgJson: Map<string, Record<string, unknown> | null>;
+	/** `${startDir}\0${specifier}` → bare-import resolution result. */
+	bare: Map<string, esbuild.OnResolveResult>;
+}
+
+function createResolveCache(): ResolveCache {
+	return { stat: new Map(), pkgJson: new Map(), bare: new Map() };
+}
+
+/**
+ * Stat a path through the cache. This collapses the resolver's old
+ * `exists` + `stat` pair into a single (memoized) filesystem call, returning
+ * `null` when the path does not exist.
+ */
+async function statCached(
+	fs: BundleFileSystem,
+	cache: ResolveCache,
+	path: string,
+): Promise<BundleFileStat | null> {
+	const cached = cache.stat.get(path);
+	if (cached !== undefined) return cached;
+
+	let result: BundleFileStat | null;
+	try {
+		result = await fs.stat(path);
+	} catch {
+		result = null;
+	}
+	cache.stat.set(path, result);
+	return result;
+}
+
+/**
+ * Read and parse a package's package.json at most once per build.
+ */
+async function readPkgJsonCached(
+	fs: BundleFileSystem,
+	cache: ResolveCache,
+	packageDir: string,
+	virtualFiles?: VirtualFileMap,
+): Promise<Record<string, unknown> | null> {
+	const cached = cache.pkgJson.get(packageDir);
+	if (cached !== undefined) return cached;
+
+	const pkgJsonPath = join(packageDir, "package.json");
+	let parsed: Record<string, unknown> | null = null;
+
+	const virtual = virtualFiles?.[pkgJsonPath];
+	try {
+		if (virtual) {
+			parsed = JSON.parse(
+				typeof virtual.contents === "string"
+					? virtual.contents
+					: new TextDecoder().decode(virtual.contents),
+			) as Record<string, unknown>;
+		} else if ((await statCached(fs, cache, pkgJsonPath))?.isFile) {
+			parsed = JSON.parse(await fs.readFile(pkgJsonPath)) as Record<
+				string,
+				unknown
+			>;
+		}
+	} catch {
+		parsed = null;
+	}
+
+	cache.pkgJson.set(packageDir, parsed);
+	return parsed;
+}
+
 /**
  * Try to resolve `basePath` to an existing file on `fs`, first by appending
  * file extensions, then by looking for index files inside a directory.
@@ -70,6 +158,7 @@ export function getLoaderFromPath(path: string): esbuild.Loader {
  */
 async function resolveWithExtensions(
 	fs: BundleFileSystem,
+	cache: ResolveCache,
 	basePath: string,
 	virtualFiles?: VirtualFileMap,
 ): Promise<string | null> {
@@ -79,9 +168,8 @@ async function resolveWithExtensions(
 		if (virtualFiles?.[fullPath]) {
 			return fullPath;
 		}
-		if (await fs.exists(fullPath)) {
-			const stat = await fs.stat(fullPath);
-			if (stat.isFile) return fullPath;
+		if ((await statCached(fs, cache, fullPath))?.isFile) {
+			return fullPath;
 		}
 	}
 
@@ -91,7 +179,7 @@ async function resolveWithExtensions(
 		if (virtualFiles?.[indexPath]) {
 			return indexPath;
 		}
-		if (await fs.exists(indexPath)) {
+		if ((await statCached(fs, cache, indexPath))?.isFile) {
 			return indexPath;
 		}
 	}
@@ -168,6 +256,7 @@ function resolvePackageEntry(pkgJson: Record<string, unknown>): string {
  */
 async function findPackageDir(
 	fs: BundleFileSystem,
+	cache: ResolveCache,
 	startDir: string,
 	packageName: string,
 	virtualFiles?: VirtualFileMap,
@@ -175,7 +264,10 @@ async function findPackageDir(
 	let dir = startDir;
 	while (true) {
 		const candidate = join(dir, "node_modules", packageName);
-		if (virtualDirectoryExists(virtualFiles, candidate) || (await fs.exists(candidate))) {
+		if (
+			virtualDirectoryExists(virtualFiles, candidate) ||
+			(await statCached(fs, cache, candidate)) !== null
+		) {
 			return candidate;
 		}
 
@@ -289,6 +381,9 @@ export function createFileSystemPlugin(
 ): esbuild.Plugin {
 	const { entryResolveDir, packageResolveDir, resolution, virtualFiles } =
 		options;
+	// One cache per build: createFileSystemPlugin is invoked once per
+	// bundleWithEsbuild call, so this is never reused across builds.
+	const cache = createResolveCache();
 	return {
 		name: "filesystem",
 		setup(build) {
@@ -328,6 +423,7 @@ export function createFileSystemPlugin(
 						const aliasedPath = join(target, `.${rest}`);
 						const resolved = await resolveWithExtensions(
 							fs,
+							cache,
 							aliasedPath,
 							virtualFiles,
 						);
@@ -342,6 +438,7 @@ export function createFileSystemPlugin(
 					const basePath = join(importerDir, args.path);
 					const resolved = await resolveWithExtensions(
 						fs,
+						cache,
 						basePath,
 						virtualFiles,
 					);
@@ -359,6 +456,7 @@ export function createFileSystemPlugin(
 						: packageResolveDir;
 					return await resolveBareImport(
 						fs,
+						cache,
 						resolveFrom,
 						args.path,
 						args.importer || "entry",
@@ -382,31 +480,65 @@ export function createFileSystemPlugin(
 					};
 				}
 
-				if (!(await fs.exists(args.path))) {
+				// Read directly and treat a failure as "not found" — this avoids a
+				// redundant `exists` probe before every load (one fewer FS call per
+				// file, which matters most on the wasm boundary).
+				const loader = getLoaderFromPath(args.path);
+				try {
+					const contents = BINARY_LOADERS.has(loader)
+						? await fs.readFileBuffer(args.path)
+						: await fs.readFile(args.path);
+
+					return {
+						contents,
+						loader,
+						resolveDir: dirname(args.path),
+					};
+				} catch {
 					return { errors: [{ text: `File not found: ${args.path}` }] };
 				}
-
-				const loader = getLoaderFromPath(args.path);
-				const contents = BINARY_LOADERS.has(loader)
-					? await fs.readFileBuffer(args.path)
-					: await fs.readFile(args.path);
-
-				return {
-					contents,
-					loader,
-					resolveDir: dirname(args.path),
-				};
 			});
 		},
 	};
 }
 
 /**
- * Resolve a bare import specifier (e.g. "react", "@scope/pkg/sub")
- * by walking up node_modules directories.
+ * Resolve a bare import specifier (e.g. "react", "@scope/pkg/sub") by walking up
+ * node_modules directories.
+ *
+ * The result is memoized per `(startDir, specifier)` for the build: a package
+ * like `lodash` imported from dozens of files resolves (and parses its
+ * package.json) exactly once.
  */
 async function resolveBareImport(
 	fs: BundleFileSystem,
+	cache: ResolveCache,
+	startDir: string,
+	specifier: string,
+	importer: string,
+	policy: ResolvedResolutionPolicy,
+	virtualFiles?: VirtualFileMap,
+): Promise<esbuild.OnResolveResult> {
+	const memoKey = `${startDir}\0${specifier}`;
+	const memoized = cache.bare.get(memoKey);
+	if (memoized) return memoized;
+
+	const result = await resolveBareImportUncached(
+		fs,
+		cache,
+		startDir,
+		specifier,
+		importer,
+		policy,
+		virtualFiles,
+	);
+	cache.bare.set(memoKey, result);
+	return result;
+}
+
+async function resolveBareImportUncached(
+	fs: BundleFileSystem,
+	cache: ResolveCache,
 	startDir: string,
 	specifier: string,
 	importer: string,
@@ -421,6 +553,7 @@ async function resolveBareImport(
 	// Walk up looking for node_modules/<package>
 	const packageDir = await findPackageDir(
 		fs,
+		cache,
 		startDir,
 		packageName,
 		virtualFiles,
@@ -435,27 +568,7 @@ async function resolveBareImport(
 		);
 	}
 
-	// Read package.json (if present)
-	const pkgJsonPath = join(packageDir, "package.json");
-	let pkgJson: Record<string, unknown> | null = null;
-	if (virtualFiles?.[pkgJsonPath]) {
-		try {
-			const contents = virtualFiles[pkgJsonPath].contents;
-			pkgJson = JSON.parse(
-				typeof contents === "string"
-					? contents
-					: new TextDecoder().decode(contents),
-			) as Record<string, unknown>;
-		} catch {
-			// ignore parse errors
-		}
-	} else if (await fs.exists(pkgJsonPath)) {
-		try {
-			pkgJson = JSON.parse(await fs.readFile(pkgJsonPath));
-		} catch {
-			// ignore parse errors
-		}
-	}
+	const pkgJson = await readPkgJsonCached(fs, cache, packageDir, virtualFiles);
 
 	// Subpath import (e.g. "lodash/get")
 	if (subpath) {
@@ -470,7 +583,12 @@ async function resolveBareImport(
 
 		// Fall back to filesystem resolution
 		const basePath = join(packageDir, subpath);
-		const resolved = await resolveWithExtensions(fs, basePath, virtualFiles);
+		const resolved = await resolveWithExtensions(
+			fs,
+			cache,
+			basePath,
+			virtualFiles,
+		);
 		return { path: resolved ?? basePath, namespace: "fs" };
 	}
 
@@ -482,7 +600,7 @@ async function resolveBareImport(
 
 	// No package.json — try index.js
 	const indexPath = join(packageDir, "index.js");
-	if (virtualFiles?.[indexPath] || (await fs.exists(indexPath))) {
+	if (virtualFiles?.[indexPath] || (await statCached(fs, cache, indexPath))?.isFile) {
 		return { path: indexPath, namespace: "fs" };
 	}
 
