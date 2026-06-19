@@ -151,10 +151,32 @@ export interface BundleResult {
  * This allows us to write code that works with either version.
  */
 export interface EsbuildAPI {
+	/** One-shot build: parse, resolve, load, and emit in a single call. */
 	build(options: esbuild.BuildOptions): Promise<esbuild.BuildResult>;
+	/**
+	 * Long-running incremental form. The returned context keeps esbuild's parsed
+	 * graph in memory so `rebuild()` only re-does work for changed inputs. Works
+	 * with both native esbuild and esbuild-wasm (the `watch`/`serve` methods do
+	 * not work in the browser, but `rebuild()` does).
+	 */
+	context(options: esbuild.BuildOptions): Promise<esbuild.BuildContext>;
 }
 
 export type BundleFn = (args: BundleArgs) => Promise<BundleResult>;
+
+/**
+ * A persistent, incremental bundler bound to a fixed entry point and filesystem.
+ *
+ * Mutate the filesystem, then call {@link BundleSession.rebuild}; esbuild reuses
+ * its cached parse/codegen for unchanged inputs. Always {@link
+ * BundleSession.dispose} when finished to release the underlying build context.
+ */
+export interface BundleSession {
+	/** Re-bundle, reusing cached work for inputs that did not change. */
+	rebuild(): Promise<BundleResult>;
+	/** Release the underlying esbuild build context. Safe to call repeatedly. */
+	dispose(): Promise<void>;
+}
 
 /**
  * Information about a Node.js built-in module used by the bundle

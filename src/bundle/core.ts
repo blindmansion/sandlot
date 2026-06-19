@@ -8,7 +8,11 @@
 import { isAbsolute, resolve } from "../util";
 import { buildNativeDependencySummary } from "./builtins";
 import type { BundleFileSystem } from "./fs";
-import { createFileSystemPlugin, createNativeImportTracker } from "./plugin";
+import {
+	createFileSystemPlugin,
+	createNativeImportTracker,
+	type NativeImportTracker,
+} from "./plugin";
 import type {
 	BundleArgs,
 	BundleFn,
@@ -72,7 +76,7 @@ function resolveResolutionPolicy(
 	};
 }
 
-function resolveBundleOptions(
+export function resolveBundleOptions(
 	factoryDefaults?: BundleOptions,
 	invocationOverrides?: BundleOptions,
 ): ResolvedBundleOptions {
@@ -123,24 +127,30 @@ function normalizeVirtualFiles(
 	return normalized;
 }
 
+export interface PreparedBuild {
+	/** esbuild build options, ready for `build()` or `context()`. */
+	buildOptions: Parameters<EsbuildAPI["build"]>[0];
+	/**
+	 * Tracker the filesystem plugin populates during each (re)build. It resets
+	 * itself at the start of every build, so reading it right after a build/
+	 * rebuild reflects only that build.
+	 */
+	nativeTracker: NativeImportTracker;
+}
+
 /**
- * Bundle code from a BundleFileSystem using a provided esbuild API
- *
- * @param esbuildApi - The esbuild API to use (native or wasm)
- * @param args - Bundle inputs and resolution directories
- * @returns The bundled code and metadata
+ * Build the esbuild options (and native-import tracker) shared by the one-shot
+ * {@link bundleWithEsbuild} and the persistent bundle session. Installs the
+ * filesystem plugin and resolves the entry point against `entryResolveDir`.
  */
-export async function bundleWithEsbuild(
-	esbuildApi: EsbuildAPI,
-	args: {
-		fs: BundleFileSystem;
-		entryPoint: string;
-		entryResolveDir: string;
-		packageResolveDir?: string;
-		virtualFiles?: VirtualFileMap;
-		options: ResolvedBundleOptions;
-	},
-): Promise<BundleResult> {
+export function prepareBuild(args: {
+	fs: BundleFileSystem;
+	entryPoint: string;
+	entryResolveDir: string;
+	packageResolveDir?: string;
+	virtualFiles?: VirtualFileMap;
+	options: ResolvedBundleOptions;
+}): PreparedBuild {
 	const { fs, options, packageResolveDir = args.entryResolveDir } = args;
 	const entryPoint = isAbsolute(args.entryPoint)
 		? args.entryPoint
@@ -150,7 +160,6 @@ export async function bundleWithEsbuild(
 		args.entryResolveDir,
 	);
 
-	// Create a tracker for native module imports
 	const nativeTracker = createNativeImportTracker();
 
 	const buildOptions: Parameters<EsbuildAPI["build"]>[0] = {
@@ -187,9 +196,18 @@ export async function bundleWithEsbuild(
 		buildOptions.outfile = options.outfile;
 	}
 
-	const result = await esbuildApi.build(buildOptions);
+	return { buildOptions, nativeTracker };
+}
 
-	// Extract outputs
+/**
+ * Turn an esbuild build/rebuild result into a {@link BundleResult}, splitting
+ * output files into JS/CSS/maps and summarizing native dependencies from the
+ * plugin's tracker.
+ */
+export function extractResult(
+	result: Awaited<ReturnType<EsbuildAPI["build"]>>,
+	nativeTracker: NativeImportTracker,
+): BundleResult {
 	let code = "";
 	let css: string | undefined;
 	let map: string | undefined;
@@ -211,10 +229,7 @@ export async function bundleWithEsbuild(
 		}
 	}
 
-	// Get list of input files
 	const inputs = result.metafile ? Object.keys(result.metafile.inputs) : [];
-
-	// Build native dependencies summary
 	const nativeDependencies = buildNativeDependencySummary(
 		nativeTracker.getImports(),
 	);
@@ -228,4 +243,27 @@ export async function bundleWithEsbuild(
 		inputs,
 		nativeDependencies,
 	};
+}
+
+/**
+ * Bundle code from a BundleFileSystem using a provided esbuild API
+ *
+ * @param esbuildApi - The esbuild API to use (native or wasm)
+ * @param args - Bundle inputs and resolution directories
+ * @returns The bundled code and metadata
+ */
+export async function bundleWithEsbuild(
+	esbuildApi: EsbuildAPI,
+	args: {
+		fs: BundleFileSystem;
+		entryPoint: string;
+		entryResolveDir: string;
+		packageResolveDir?: string;
+		virtualFiles?: VirtualFileMap;
+		options: ResolvedBundleOptions;
+	},
+): Promise<BundleResult> {
+	const { buildOptions, nativeTracker } = prepareBuild(args);
+	const result = await esbuildApi.build(buildOptions);
+	return extractResult(result, nativeTracker);
 }

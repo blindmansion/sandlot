@@ -7,6 +7,7 @@ export {
 } from "./builtins";
 export { createBundleFn } from "./core";
 export { formatBundleError } from "./errors";
+export { createBundleSession } from "./session";
 export type {
 	BundleFileStat,
 	BundleFileSystem,
@@ -19,6 +20,7 @@ export type {
 	BundleOptions,
 	BundleResolutionPreset,
 	BundleResult,
+	BundleSession,
 	EsbuildAPI,
 	MissingBareImportBehavior,
 	NativeDependency,

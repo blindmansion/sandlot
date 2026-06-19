@@ -40,9 +40,9 @@
 import * as esbuildNative from "esbuild";
 import {
 	type BundleArgs,
-	type BundleFn,
 	type BundleResult,
 	createBundleFn,
+	createBundleSession,
 	createWasmEsbuild,
 	type EsbuildAPI,
 } from "../src/bundle";
@@ -300,21 +300,31 @@ function editContent(i: number): string {
 	);
 }
 
+interface EngineProfile {
+	oneShot: { warm: Stats; edit: Stats };
+	persistent: { warm: Stats; edit: Stats };
+}
+
 /**
- * Run cold + warm + edit-loop bundles against a given esbuild engine and report
- * the timings, output shape, and FS chattiness. Returns the warm/edit medians so
- * callers can build a cross-engine comparison.
+ * Profile both bundling paths for a given esbuild engine:
+ *   - one-shot:    createBundleFn() — a fresh build every call
+ *   - persistent:  createBundleSession() — a long-lived incremental context
+ *
+ * Reports timings, output shape, and FS chattiness, and verifies the persistent
+ * path produces byte-identical output. Returns the medians for a cross-engine,
+ * cross-path comparison.
  */
 async function profileEngine(
 	name: string,
-	bundle: BundleFn,
+	engine: EsbuildAPI,
 	counting: CountingFs,
 	args: BundleArgs,
 	editPath: string,
-): Promise<{ warm: Stats; edit: Stats }> {
-	banner(`${name} — createBundleFn() runs a fresh build every call`);
+): Promise<EngineProfile> {
+	// ── One-shot: createBundleFn() ──────────────────────────────────────
+	banner(`${name} — one-shot: createBundleFn() rebuilds every call`);
+	const bundle = createBundleFn(engine);
 
-	// Cold: first build also pays one-time engine/JIT warmup.
 	counting.reset();
 	const [cold, coldTime] = await timed(() => bundle(args));
 	const coldCounters = { ...counting.counters };
@@ -323,34 +333,93 @@ async function profileEngine(
 	info("native deps", cold.nativeDependencies.modules);
 	reportFsCounts(coldCounters, cold.inputs.length);
 
-	const coldSig = bundleSignature(cold);
+	const sig = bundleSignature(cold);
 
-	// Warm: identical input, repeated. With no persistent context this is the
-	// steady-state cost of a full rebuild.
-	const warm: number[] = [];
-	let warmMismatches = 0;
+	const oneShotWarm: number[] = [];
+	let oneShotMismatch = 0;
 	for (let i = 0; i < WARM_RUNS; i++) {
 		const [result, t] = await timed(() => bundle(args));
-		warm.push(t);
-		if (bundleSignature(result) !== coldSig) warmMismatches++;
+		oneShotWarm.push(t);
+		if (bundleSignature(result) !== sig) oneShotMismatch++;
 	}
-	reportStats("warm", summarize(warm));
+	reportStats("warm", summarize(oneShotWarm));
 	info(
 		"output stable across warm runs",
-		warmMismatches === 0 ? "yes" : `NO (${warmMismatches} mismatches)`,
+		oneShotMismatch === 0 ? "yes" : `NO (${oneShotMismatch} mismatches)`,
 	);
 
-	// Edit loop: mutate a reachable source file each iteration, rebuild.
-	const edit: number[] = [];
+	const oneShotEdit: number[] = [];
 	for (let i = 0; i < EDIT_RUNS; i++) {
 		await args.fs.writeFile(editPath, editContent(i));
 		const [, t] = await timed(() => bundle(args));
-		edit.push(t);
+		oneShotEdit.push(t);
 	}
 	await args.fs.writeFile(editPath, editContent(0));
-	reportStats("edit", summarize(edit));
+	reportStats("edit", summarize(oneShotEdit));
 
-	return { warm: summarize(warm), edit: summarize(edit) };
+	// ── Persistent: createBundleSession() ───────────────────────────────
+	banner(`${name} — persistent: session.rebuild() reuses cached parse`);
+	const session = await createBundleSession(engine, args);
+	try {
+		const [pCold, pColdTime] = await timed(() => session.rebuild());
+		info("cold first rebuild", ms(pColdTime));
+		info(
+			"matches one-shot output",
+			bundleSignature(pCold) === sig ? "yes" : "NO",
+		);
+
+		counting.reset();
+		const persistentWarm: number[] = [];
+		let persistentMismatch = 0;
+		for (let i = 0; i < WARM_RUNS; i++) {
+			const [result, t] = await timed(() => session.rebuild());
+			persistentWarm.push(t);
+			if (bundleSignature(result) !== sig) persistentMismatch++;
+		}
+		const warmCounters = { ...counting.counters };
+		reportStats("warm", summarize(persistentWarm));
+		info(
+			"output stable across warm rebuilds",
+			persistentMismatch === 0 ? "yes" : `NO (${persistentMismatch} mismatches)`,
+		);
+		reportFsCounts(warmCounters, cold.inputs.length * WARM_RUNS);
+
+		const persistentEdit: number[] = [];
+		let editMismatch = 0;
+		for (let i = 0; i < EDIT_RUNS; i++) {
+			await args.fs.writeFile(editPath, editContent(i));
+			const [result, t] = await timed(() => session.rebuild());
+			persistentEdit.push(t);
+			// Cross-check against a one-shot build of the same edited input.
+			const fresh = await bundle(args);
+			if (bundleSignature(result) !== bundleSignature(fresh)) editMismatch++;
+		}
+		await args.fs.writeFile(editPath, editContent(0));
+		reportStats("edit", summarize(persistentEdit));
+		info(
+			"edit output matches one-shot",
+			editMismatch === 0 ? "yes (all iterations)" : `NO (${editMismatch})`,
+		);
+
+		// ── Speedup (persistent vs one-shot) ────────────────────────────
+		banner(`${name} — speedup (persistent vs one-shot, median)`);
+		const warmSpeedup =
+			summarize(oneShotWarm).median / summarize(persistentWarm).median;
+		const editSpeedup =
+			summarize(oneShotEdit).median / summarize(persistentEdit).median;
+		info("warm", `${warmSpeedup.toFixed(1)}x faster`);
+		info("edit", `${editSpeedup.toFixed(1)}x faster`);
+
+		return {
+			oneShot: { warm: summarize(oneShotWarm), edit: summarize(oneShotEdit) },
+			persistent: {
+				warm: summarize(persistentWarm),
+				edit: summarize(persistentEdit),
+			},
+		};
+	} finally {
+		await session.dispose();
+	}
 }
 
 function loadWasmEngine(): EsbuildAPI | null {
@@ -449,22 +518,20 @@ async function run(): Promise<void> {
 		}
 
 		// ── Native engine ──────────────────────────────────────────────────
-		const nativeBundle = createBundleFn(nativeEngine);
 		const nativeResult = await profileEngine(
 			"Native esbuild",
-			nativeBundle,
+			nativeEngine,
 			counting,
 			args,
 			editPath,
 		);
 
 		// ── Wasm engine ──────────────────────────────────────────────────────
-		let wasmStats: { warm: Stats; edit: Stats } | null = null;
+		let wasmResult: EngineProfile | null = null;
 		if (wasmEngine) {
-			const wasmBundle = createBundleFn(wasmEngine);
-			wasmStats = await profileEngine(
+			wasmResult = await profileEngine(
 				"Wasm esbuild",
-				wasmBundle,
+				wasmEngine,
 				counting,
 				args,
 				editPath,
@@ -472,20 +539,26 @@ async function run(): Promise<void> {
 		}
 
 		// ── Comparison summary ─────────────────────────────────────────────
-		if (wasmStats) {
-			banner("Native vs wasm (median, same plugin + FS)");
+		banner("Summary — median per build/rebuild");
+		const line = (
+			label: string,
+			oneShot: number,
+			persistent: number,
+		): void => {
 			info(
-				"warm",
-				`native ${ms(nativeResult.warm.median)} vs wasm ${ms(
-					wasmStats.warm.median,
-				)} → ${(wasmStats.warm.median / nativeResult.warm.median).toFixed(1)}x`,
+				label,
+				`one-shot ${ms(oneShot)} → persistent ${ms(persistent)}  (${(
+					oneShot / persistent
+				).toFixed(1)}x)`,
 			);
-			info(
-				"edit",
-				`native ${ms(nativeResult.edit.median)} vs wasm ${ms(
-					wasmStats.edit.median,
-				)} → ${(wasmStats.edit.median / nativeResult.edit.median).toFixed(1)}x`,
-			);
+		};
+		console.log("   native:");
+		line("  warm", nativeResult.oneShot.warm.median, nativeResult.persistent.warm.median);
+		line("  edit", nativeResult.oneShot.edit.median, nativeResult.persistent.edit.median);
+		if (wasmResult) {
+			console.log("   wasm:");
+			line("  warm", wasmResult.oneShot.warm.median, wasmResult.persistent.warm.median);
+			line("  edit", wasmResult.oneShot.edit.median, wasmResult.persistent.edit.median);
 		}
 
 		banner("Done");

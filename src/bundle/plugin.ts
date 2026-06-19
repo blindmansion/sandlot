@@ -339,6 +339,8 @@ export interface NativeImportTracker {
 	recordImport(module: string, importer: string): void;
 	/** Get all recorded imports */
 	getImports(): Map<string, Set<string>>;
+	/** Clear recorded imports (called at the start of each rebuild). */
+	reset(): void;
 }
 
 export function createNativeImportTracker(): NativeImportTracker {
@@ -356,6 +358,9 @@ export function createNativeImportTracker(): NativeImportTracker {
 		},
 		getImports() {
 			return imports;
+		},
+		reset() {
+			imports.clear();
 		},
 	};
 }
@@ -387,6 +392,18 @@ export function createFileSystemPlugin(
 	return {
 		name: "filesystem",
 		setup(build) {
+			// ---- Per-rebuild reset ----
+			// With a persistent BuildContext the plugin is set up once but the
+			// filesystem may change between rebuilds, so the per-build caches must
+			// be dropped at the start of every (re)build. onStart is guaranteed to
+			// run before any onResolve/onLoad in the same build.
+			build.onStart(() => {
+				cache.stat.clear();
+				cache.pkgJson.clear();
+				cache.bare.clear();
+				nativeTracker?.reset();
+			});
+
 			// ---- Resolve ----
 			build.onResolve({ filter: /.*/ }, async (args) => {
 				// Node.js built-ins → external
