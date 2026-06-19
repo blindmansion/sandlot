@@ -20,14 +20,14 @@ import {
 	mergeHostFunctions,
 	stripModuleExports,
 	toRunError,
-} from "../toolchain/run/shared";
+} from "../run/shared";
 import type {
 	HostFunction,
 	LogEntry,
 	RunCodeArgs,
 	RunCodeResult,
 	RunError,
-} from "../toolchain/run/types";
+} from "../run/types";
 
 /**
  * A {@link RunCodeResult} augmented with the executed module's exports.

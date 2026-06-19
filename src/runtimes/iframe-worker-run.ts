@@ -6,10 +6,10 @@
  * `IframeOrchestrator` while using a browser `postMessage` boundary.
  */
 
-import { HostSessionManager } from "../toolchain/run/host-handler";
+import { HostSessionManager } from "../run/host-handler";
 import type { Transferable } from "bun";
-import type { Transport } from "../toolchain/run/protocol";
-import type { HostFunction, RunCodeResult, RunFn } from "../toolchain/run/types";
+import type { Transport } from "../run/protocol";
+import type { HostFunction, RunCodeResult, RunFn } from "../run/types";
 
 let nextChannelId = 0;
 
