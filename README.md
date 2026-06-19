@@ -52,6 +52,12 @@ agent-browser screenshot /tmp/render.png              # visually verify the rend
 # Inspect or drive the rendered view from the host (runs JS *inside* the iframe)
 agent-browser eval "sandlot.evaluate('return document.getElementById(\"root\").innerHTML')"
 agent-browser eval "sandlot.evaluate('document.querySelector(\"button\").click(); return true')"
+
+# Hold a reference to a non-serializable value (a DOM node) across calls
+agent-browser eval "sandlot.evaluateHandle('return document.querySelector(\"button\")').then(r => r.handle)"
+# → { "__sandlot_handle__": 0 }   (the node stays in the iframe; only the token crosses)
+agent-browser eval "sandlot.evaluate('__args[0].click(); return __args[0].textContent', {__sandlot_handle__: 0})"
+agent-browser eval "sandlot.releaseHandle({__sandlot_handle__: 0})"
 ```
 
 ### `window.sandlot` surface
@@ -65,7 +71,9 @@ All methods are async and return only structured-clone-safe data.
 - `install(specs?)` — install packages (defaults to deps declared in `/package.json`); returns `[{ name, version }]`.
 - `run(entryPoint)` — bundle and execute in a sandboxed **Web Worker** iframe; returns `{ ok, log, error? }`. There is no DOM here (`document`/`window` are unavailable) — use `render` for anything that touches the DOM.
 - `render(entryPoint, options?)` — bundle and mount into the visible iframe, which provides a single `<div id="root">` host element; returns `{ ok, log, error? }`. Entry points should mount their UI into `#root` (e.g. `document.getElementById("root")`).
-- `evaluate(code, ...args)` — run JavaScript *inside* the currently-rendered iframe and return its value; `{ ok, value?, error? }`. The code is an async function body that may `return` a value and reference `__args`, runs with the same `Sand.*` host functions, and shares the rendered view's live DOM/`window`. Requires a prior `render(...)`. This is the way to read or mutate the sandboxed iframe's DOM from the host (see the note below). Non-serializable returns (e.g. a DOM node) come back as `{ ok: false }` with a serialization error.
+- `evaluate(code, ...args)` — run JavaScript *inside* the currently-rendered iframe and return its value; `{ ok, value?, error? }`. The code is an async function body that may `return` a value and reference `__args`, runs with the same `Sand.*` host functions, and shares the rendered view's live DOM/`window`. Requires a prior `render(...)`. This is the way to read or mutate the sandboxed iframe's DOM from the host (see the note below). Non-serializable returns (e.g. a DOM node) come back as `{ ok: false }` with a serialization error — use `evaluateHandle` for those.
+- `evaluateHandle(code, ...args)` — like `evaluate`, but keeps the top-level return value *inside* the iframe and returns an opaque `handle` token (`{ ok, handle?, error? }`) instead of serializing it. Hold the token and pass it back into later `evaluate`/`evaluateHandle` calls as an arg (it is re-hydrated into the live object), then free it with `releaseHandle`. This is the idiomatic way to reference a DOM node or other non-serializable object across calls.
+- `releaseHandle(token)` — release a handle returned by `evaluateHandle`. Handles are also invalidated whenever the render is torn down or replaced (a new `render()` or `reset()`).
 - `fixtures()` — list committed fixtures under `test/fixtures/` (e.g. `lit-app`, `react-app`, `basic`).
 - `seedFixture(name, { install? })` — seed a fixture into the in-memory filesystem; pass `{ install: true }` to also install its declared deps. Returns `{ fixture, files, installed? }`.
 - `reset()` — clear the in-memory filesystem (including installed packages) and reset the typecheck session, to switch tasks without reloading the page.

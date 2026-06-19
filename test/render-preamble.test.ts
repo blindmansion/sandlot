@@ -47,6 +47,33 @@ test("non-serializable results fall back to a DataCloneError", () => {
 	expect(src).toContain('name: "DataCloneError"');
 });
 
+test("eval errors include the stack", () => {
+	const src = generateIframePreamble([], CHANNEL);
+
+	expect(src).toContain("stack: err instanceof Error ? err.stack : undefined");
+});
+
+test("preamble emits the handle registry and hydration helpers", () => {
+	const src = generateIframePreamble([], CHANNEL);
+
+	expect(src).toContain("const __handles = new Map();");
+	expect(src).toContain("function __registerHandle(value)");
+	expect(src).toContain("function __hydrateArgs(args)");
+	// Eval args are hydrated (handle tokens -> live objects) before binding.
+	expect(src).toContain("__hydrateArgs(args)");
+});
+
+test("eval honors returnHandle and emits a handle-release branch", () => {
+	const src = generateIframePreamble([], CHANNEL);
+
+	// returnHandle keeps the value in-realm and posts back a token.
+	expect(src).toContain("if (msg.returnHandle)");
+	expect(src).toContain("handle: __registerHandle(result)");
+	// Releasing drops the handle from the registry.
+	expect(src).toContain('if (msg.type === "handle-release")');
+	expect(src).toContain("__handles.delete(msg.handleId)");
+});
+
 test("host function stubs are still generated alongside eval", () => {
 	const fns = [
 		defineHostFunction({

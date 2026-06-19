@@ -26,6 +26,7 @@ import type {
 	CallbackReleaseMessage,
 	ConsoleMessage,
 	DoneMessage,
+	EvalHandleToken,
 	EvalResultMessage,
 	HostCallMessage,
 } from "../run/protocol";
@@ -212,6 +213,7 @@ export function createIframeRenderFn(
 						resolve({
 							ok: !msg.error,
 							value: msg.result,
+							handle: msg.handle,
 							error: msg.error,
 						});
 					}
@@ -223,6 +225,28 @@ export function createIframeRenderFn(
 		// Mount the HTML — exec is triggered by the preamble's "ready" message
 		iframe.srcdoc = html;
 
+		async function sendEval<T = unknown>(
+			code: string,
+			evalArgs: unknown[],
+			returnHandle: boolean,
+		): Promise<EvaluateResult<T>> {
+			await readyPromise;
+			if (closed) {
+				return { ok: false, error: { message: "Render closed" } };
+			}
+			const evalId = nextEvalId++;
+			return new Promise<EvaluateResult<T>>((resolve) => {
+				pendingEvals.set(evalId, resolve as (r: EvaluateResult) => void);
+				transport.send({
+					type: "eval",
+					evalId,
+					code,
+					args: evalArgs,
+					...(returnHandle ? { returnHandle: true } : {}),
+				});
+			});
+		}
+
 		const handle: RenderHandle = {
 			result,
 			getLog() {
@@ -232,17 +256,19 @@ export function createIframeRenderFn(
 				code: string,
 				...evalArgs: unknown[]
 			): Promise<EvaluateResult<T>> {
-				await readyPromise;
-				if (closed) {
-					return { ok: false, error: { message: "Render closed" } };
-				}
-				const evalId = nextEvalId++;
-				return new Promise<EvaluateResult<T>>((resolve) => {
-					pendingEvals.set(
-						evalId,
-						resolve as (r: EvaluateResult) => void,
-					);
-					transport.send({ type: "eval", evalId, code, args: evalArgs });
+				return sendEval<T>(code, evalArgs, false);
+			},
+			async evaluateHandle(
+				code: string,
+				...evalArgs: unknown[]
+			): Promise<EvaluateResult> {
+				return sendEval(code, evalArgs, true);
+			},
+			releaseHandle(token: EvalHandleToken) {
+				if (closed) return;
+				transport.send({
+					type: "handle-release",
+					handleId: token.__sandlot_handle__,
 				});
 			},
 			close() {

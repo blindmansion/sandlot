@@ -7,7 +7,10 @@
  * into a DOM context instead of running headlessly in a Worker.
  */
 
+import type { EvalHandleToken } from "../run/protocol";
 import type { HostFunction, LogEntry, RunCodeResult, RunError } from "../run/types";
+
+export type { EvalHandleToken } from "../run/protocol";
 
 // ---------------------------------------------------------------------------
 // Render args, result, handle
@@ -35,8 +38,14 @@ export type RenderResult = RunCodeResult;
 export interface EvaluateResult<T = unknown> {
 	/** True if the code ran to completion and its return value was serializable. */
 	ok: boolean;
-	/** The structured-cloned return value (present on success). */
+	/** The structured-cloned return value (present on a successful by-value `evaluate`). */
 	value?: T;
+	/**
+	 * Reference to the kept return value (present on a successful `evaluateHandle`).
+	 * The referenced object stays inside the iframe; pass the token back in a
+	 * later `evaluate`/`evaluateHandle` `...args` to operate on it.
+	 */
+	handle?: EvalHandleToken;
 	/** The error that terminated evaluation or serialization (present on failure). */
 	error?: RunError;
 }
@@ -63,6 +72,22 @@ export interface RenderHandle {
 		code: string,
 		...args: unknown[]
 	): Promise<EvaluateResult<T>>;
+	/**
+	 * Like {@link RenderHandle.evaluate}, but keeps the top-level return value
+	 * inside the iframe and resolves with an {@link EvalHandleToken} (in the
+	 * `handle` field) instead of structured-cloning it back. Use this for
+	 * non-serializable values (DOM nodes, class instances): hold the token and
+	 * pass it into later `evaluate`/`evaluateHandle` calls via `...args`, where
+	 * it is re-hydrated into the live object. Release it with
+	 * {@link RenderHandle.releaseHandle}. Handles are invalidated when the render
+	 * is torn down or replaced.
+	 */
+	evaluateHandle(
+		code: string,
+		...args: unknown[]
+	): Promise<EvaluateResult>;
+	/** Release a handle previously returned by {@link RenderHandle.evaluateHandle}. */
+	releaseHandle(token: EvalHandleToken): void;
 	/** Tear down the render: close transport, resolve result. */
 	close(): void;
 }

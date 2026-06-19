@@ -69,8 +69,32 @@ export interface EvalMessage {
 	 * a value and may reference `__args`.
 	 */
 	code: string;
-	/** Arguments exposed to the evaluated code as `__args` (structured-cloneable). */
+	/**
+	 * Arguments exposed to the evaluated code as `__args`. Each may be a
+	 * structured-cloneable value or an {@link EvalHandleToken} referencing a
+	 * previously-returned non-serializable object; tokens are re-hydrated into
+	 * the live object inside the iframe before the code runs.
+	 */
 	args: unknown[];
+	/**
+	 * When true, the top-level return value is kept inside the iframe and
+	 * referenced by an {@link EvalHandleToken} instead of being structured-cloned
+	 * back to the host. Lets the caller hold a reference to a non-serializable
+	 * value (e.g. a DOM node) and pass it back into later evals.
+	 */
+	returnHandle?: boolean;
+}
+
+/**
+ * An opaque reference to a value that lives inside the render iframe's realm.
+ *
+ * Only the integer `id` crosses the boundary; the referenced object never
+ * leaves the iframe. Pass a token back in an {@link EvalMessage}'s `args` to
+ * operate on the live object, and release it with a {@link HandleReleaseMessage}.
+ * Handles are invalidated when the render is torn down or replaced.
+ */
+export interface EvalHandleToken {
+	__sandlot_handle__: number;
 }
 
 /**
@@ -84,10 +108,26 @@ export interface EvalResultMessage {
 	type: "eval-result";
 	/** The evalId from the corresponding EvalMessage. */
 	evalId: number;
-	/** The returned value (present on success). */
+	/** The returned value, structured-cloned (present on a successful by-value eval). */
 	result?: unknown;
+	/**
+	 * Reference to the kept return value (present on a successful eval issued
+	 * with `returnHandle: true`).
+	 */
+	handle?: EvalHandleToken;
 	/** Error info (present on failure). */
-	error?: { message: string; name?: string };
+	error?: { message: string; name?: string; stack?: string };
+}
+
+/**
+ * Host → Iframe (render): release a value previously kept via an
+ * {@link EvalMessage} with `returnHandle: true`, freeing it from the iframe's
+ * handle registry. No-op if the handle is unknown or already released.
+ */
+export interface HandleReleaseMessage {
+	type: "handle-release";
+	/** The id from the {@link EvalHandleToken} to release. */
+	handleId: number;
 }
 
 /**

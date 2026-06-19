@@ -48,6 +48,7 @@ export function generateIframePreamble(
 	return [
 		generateHeader(channelIdStr),
 		generateCallbackRegistry(),
+		generateHandleRegistry(),
 		hasRpcStubs ? generatePromiseMap(channelIdStr) : null,
 		generateStubs(stubs, channelIdStr),
 		generateGlobalsRegistry(stubs),
@@ -77,6 +78,32 @@ function __serializeArgs(args) {
 			var cbId = __nextCbId++;
 			__callbacks.set(cbId, arg);
 			return { __sandlot_cb__: cbId };
+		}
+		return arg;
+	});
+}`;
+}
+
+function generateHandleRegistry(): string {
+	return `// Handle registry: keep non-serializable eval return values in this realm
+// and reference them across calls by an opaque token (mirrors __callbacks).
+const __handles = new Map();
+let __nextHandleId = 0;
+const __HANDLE_SENTINEL = "__sandlot_handle__";
+
+function __registerHandle(value) {
+	const id = __nextHandleId++;
+	__handles.set(id, value);
+	return { [__HANDLE_SENTINEL]: id };
+}
+
+// Replace handle tokens in eval args with the live objects they reference.
+// Only scans the top-level args array (no deep traversal), matching the
+// callback hydration contract.
+function __hydrateArgs(args) {
+	return (args || []).map(function (arg) {
+		if (arg !== null && typeof arg === "object" && __HANDLE_SENTINEL in arg) {
+			return __handles.get(arg[__HANDLE_SENTINEL]);
 		}
 		return arg;
 	});
@@ -223,7 +250,7 @@ async function __execute(code) {
 async function __evaluate(code, args) {
 	const module = { exports: {} };
 	const paramNames = ["module", "exports", "__args"];
-	const paramValues = [module, module.exports, args];
+	const paramValues = [module, module.exports, __hydrateArgs(args)];
 	for (const [name, value] of Object.entries(__globals)) {
 		paramNames.push(name);
 		paramValues.push(value);
@@ -247,13 +274,27 @@ ${hostResponseHandler}
 			error = {
 				message: err instanceof Error ? err.message : String(err),
 				name: err instanceof Error ? err.name : "Error",
+				stack: err instanceof Error ? err.stack : undefined,
 			};
 		}
+		if (error) {
+			window.parent.postMessage({ type: "eval-result", evalId: msg.evalId, error: error, __channelId: ${channelIdStr} }, "*");
+			return;
+		}
+		if (msg.returnHandle) {
+			// Keep the value in this realm; only its token crosses the boundary.
+			window.parent.postMessage({ type: "eval-result", evalId: msg.evalId, handle: __registerHandle(result), __channelId: ${channelIdStr} }, "*");
+			return;
+		}
 		try {
-			window.parent.postMessage({ type: "eval-result", evalId: msg.evalId, result: result, error: error, __channelId: ${channelIdStr} }, "*");
+			window.parent.postMessage({ type: "eval-result", evalId: msg.evalId, result: result, __channelId: ${channelIdStr} }, "*");
 		} catch (postErr) {
 			window.parent.postMessage({ type: "eval-result", evalId: msg.evalId, error: { message: "Result is not serializable: " + (postErr instanceof Error ? postErr.message : String(postErr)), name: "DataCloneError" }, __channelId: ${channelIdStr} }, "*");
 		}
+		return;
+	}
+	if (msg.type === "handle-release") {
+		__handles.delete(msg.handleId);
 		return;
 	}
 	if (msg.type === "callback-invoke") {

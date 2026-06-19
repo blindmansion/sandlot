@@ -48,7 +48,7 @@ import {
 } from "../../src/toolchain/typecheck";
 import type { Diagnostic } from "../../src/toolchain/typecheck";
 import { createIframeRenderFn } from "../../src/render";
-import type { RenderHandle } from "../../src/render";
+import type { EvalHandleToken, RenderHandle } from "../../src/render";
 import { createIframeWorkerRunFn } from "../../src/runtimes/iframe-worker-run";
 import { MemoryUnionFs } from "../helpers/memory-fs";
 
@@ -101,7 +101,9 @@ interface EvalReport {
 	ok: boolean;
 	/** The return value of the evaluated code (structured-clone-safe). */
 	value?: unknown;
-	error?: { message: string; name?: string };
+	/** Opaque token for a kept return value (present on a successful `evaluateHandle`). */
+	handle?: EvalHandleToken;
+	error?: { message: string; name?: string; stack?: string };
 }
 
 interface SandlotFs {
@@ -139,8 +141,22 @@ interface SandlotApi {
 	 * reference `__args`; it runs with the same `Sand.*` host functions and
 	 * shares the rendered view's live DOM/`window`. Requires a prior
 	 * `render(...)` call. Returns `{ ok, value?, error? }`.
+	 *
+	 * `args` may include handle tokens from a prior `evaluateHandle(...)`; each
+	 * is re-hydrated into its live object inside the iframe before the code runs.
 	 */
 	evaluate(code: string, ...args: unknown[]): Promise<EvalReport>;
+	/**
+	 * Like `evaluate`, but keeps the top-level return value inside the iframe
+	 * and returns an opaque `handle` token instead of structured-cloning it.
+	 * Use this for non-serializable values (DOM nodes, class instances): hold
+	 * the token and pass it back into later `evaluate`/`evaluateHandle` `...args`
+	 * to operate on the live object. Release it with `releaseHandle(token)`.
+	 * Returns `{ ok, handle?, error? }`. Requires a prior `render(...)`.
+	 */
+	evaluateHandle(code: string, ...args: unknown[]): Promise<EvalReport>;
+	/** Release a handle previously returned by `evaluateHandle`. No-op if there is no active render. */
+	releaseHandle(token: EvalHandleToken): Promise<void>;
 	/** List committed fixtures available on the dev server (e.g. `lit-app`). */
 	fixtures(): Promise<string[]>;
 	/**
@@ -275,6 +291,42 @@ function toExecReport(result: {
 	};
 }
 
+/**
+ * Drive `evaluate`/`evaluateHandle` on the active render and project the result
+ * into a serializable {@link EvalReport}. `evaluate` surfaces a by-value `value`;
+ * `evaluateHandle` surfaces an opaque `handle` token instead.
+ */
+async function runEvaluate(
+	mode: "evaluate" | "evaluateHandle",
+	code: string,
+	args: unknown[],
+): Promise<EvalReport> {
+	if (!currentRenderHandle) {
+		return {
+			ok: false,
+			error: { message: "No active render. Call render(...) first." },
+		};
+	}
+	const result =
+		mode === "evaluateHandle"
+			? await currentRenderHandle.evaluateHandle(code, ...args)
+			: await currentRenderHandle.evaluate(code, ...args);
+	return {
+		ok: result.ok,
+		...(result.ok && mode === "evaluate" ? { value: result.value } : {}),
+		...(result.ok && result.handle ? { handle: result.handle } : {}),
+		...(result.error
+			? {
+					error: {
+						message: result.error.message,
+						name: result.error.name,
+						...(result.error.stack ? { stack: result.error.stack } : {}),
+					},
+				}
+			: {}),
+	};
+}
+
 // ---------------------------------------------------------------------------
 // Facade
 // ---------------------------------------------------------------------------
@@ -402,20 +454,15 @@ const sandlot: SandlotApi = {
 	},
 
 	async evaluate(code, ...args) {
-		if (!currentRenderHandle) {
-			return {
-				ok: false,
-				error: { message: "No active render. Call render(...) first." },
-			};
-		}
-		const result = await currentRenderHandle.evaluate(code, ...args);
-		return {
-			ok: result.ok,
-			...(result.ok ? { value: result.value } : {}),
-			...(result.error
-				? { error: { message: result.error.message, name: result.error.name } }
-				: {}),
-		};
+		return runEvaluate("evaluate", code, args);
+	},
+
+	async evaluateHandle(code, ...args) {
+		return runEvaluate("evaluateHandle", code, args);
+	},
+
+	async releaseHandle(token) {
+		currentRenderHandle?.releaseHandle(token);
 	},
 
 	async fixtures() {
