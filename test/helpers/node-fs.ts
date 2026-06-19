@@ -21,14 +21,14 @@ import type {
 	BundleFileSystem,
 	BundleMkdirOptions,
 	FileContent,
-} from "../../src/bundle/fs";
+} from "../../src/toolchain/bundle/fs";
 import type {
 	InstallFileSystem,
 	InstallMkdirOptions,
 	InstallRmOptions,
-} from "../../src/install/fs";
-import type { TypecheckFileSystem } from "../../src/typecheck/fs";
-import { isAbsolute, normalize } from "../../src/util";
+} from "../../src/toolchain/install/fs";
+import type { TypecheckFileSystem } from "../../src/toolchain/typecheck/fs";
+import { isAbsolute, normalize } from "../../src/toolchain/util";
 
 /**
  * The superset stat shape. It carries every field any of the three module stat
@@ -56,8 +56,7 @@ function toUnionStat(stats: fsSync.Stats): UnionFileStat {
  * @see {@link TypecheckFileSystem}
  */
 export class NodeUnionFs
-	implements InstallFileSystem, BundleFileSystem, TypecheckFileSystem
-{
+	implements InstallFileSystem, BundleFileSystem, TypecheckFileSystem {
 	/** Absolute real path that the virtual root (`/`) maps onto. */
 	readonly root: string;
 

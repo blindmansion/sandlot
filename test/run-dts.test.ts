@@ -21,8 +21,8 @@ import {
 	createSandHostFunctions,
 	generateHostFunctionDts,
 } from "../src/host-functions";
-import { MemoryUnionFs } from "../src/memory-fs";
-import { runTypecheck, summarizeDiagnostics } from "../src/typecheck";
+import { MemoryUnionFs } from "./helpers/memory-fs";
+import { runTypecheck, summarizeDiagnostics } from "../src/toolchain/typecheck";
 
 const DECL_PATH = "/__sandlot_globals__.d.ts";
 

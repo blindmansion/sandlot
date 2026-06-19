@@ -11,19 +11,19 @@
  * gracefully to "skip" when offline, so the page still tells a useful story.
  */
 
-import { createBundleFn, createWasmEsbuild } from "../../src/bundle";
+import { createBundleFn, createWasmEsbuild } from "../../src/toolchain/bundle";
 import { createSandHostFunctions } from "../../src/host-functions";
 import {
 	getProjectRoot,
 	install,
 	readDepsFromPackageJson,
-} from "../../src/install";
-import { MemoryUnionFs } from "../../src/memory-fs";
+} from "../../src/toolchain/install";
+import { MemoryUnionFs } from "../helpers/memory-fs";
 import { createIframeWorkerRunFn } from "../../src/runtimes/iframe-worker-run";
 import {
 	createTypecheckSession,
 	summarizeDiagnostics,
-} from "../../src/typecheck";
+} from "../../src/toolchain/typecheck";
 
 // esbuild-wasm requires the .wasm binary to match the JS package version.
 // Pinned to the version in package.json (esbuild-wasm@0.28.1).
@@ -228,8 +228,8 @@ async function runnerSection(
 			run,
 			"/src/task.ts",
 			'console.log("hello from the worker");\n' +
-				"console.log(`sum = ${19 + 23}`);\n" +
-				"export {};\n",
+			"console.log(`sum = ${19 + 23}`);\n" +
+			"export {};\n",
 		);
 		const lines = ran.log.map((l) => l.text);
 		const captured =
@@ -251,8 +251,8 @@ async function runnerSection(
 			run,
 			"/src/host-task.ts",
 			'const text = await Sand.fs.readFile("/src/math.ts");\n' +
-				'console.log(`math.ts length ${text.length}`);\n' +
-				"export {};\n",
+			'console.log(`math.ts length ${text.length}`);\n' +
+			"export {};\n",
 			createSandHostFunctions({ fs }),
 		);
 		const bridged =

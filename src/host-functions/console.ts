@@ -6,8 +6,8 @@
  * arguments and invokes the provided callback with the log level and text.
  */
 
-import type { HostFunction, LogLevel } from "../run/types";
-import { defineHostFunction } from "../run/types";
+import type { HostFunction, LogLevel } from "../toolchain/run/types";
+import { defineHostFunction } from "../toolchain/run/types";
 
 const CONSOLE_METHODS: LogLevel[] = ["log", "info", "debug", "warn", "error"];
 

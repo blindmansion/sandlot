@@ -9,7 +9,7 @@
  * that actually want a terminal-style representation.
  */
 
-import type { LogLevel, RunCodeResult } from "../run/types";
+import type { LogLevel, RunCodeResult } from "../toolchain/run/types";
 
 const STDOUT_LEVELS: LogLevel[] = ["log", "info", "debug"];
 const STDERR_LEVELS: LogLevel[] = ["warn", "error"];

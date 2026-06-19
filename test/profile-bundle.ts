@@ -45,9 +45,9 @@ import {
 	createBundleSession,
 	createWasmEsbuild,
 	type EsbuildAPI,
-} from "../src/bundle";
-import type { BundleFileSystem } from "../src/bundle/fs";
-import { getProjectRoot, install, readDepsFromPackageJson } from "../src/install";
+} from "../src/toolchain/bundle";
+import type { BundleFileSystem } from "../src/toolchain/bundle/fs";
+import { getProjectRoot, install, readDepsFromPackageJson } from "../src/toolchain/install";
 import type { NodeUnionFs } from "./helpers";
 import { loadFixture, type Workspace } from "./helpers";
 
@@ -119,7 +119,7 @@ function reportStats(label: string, stats: Stats): void {
 	info(
 		label,
 		`n=${stats.runs}  min=${ms(stats.min)}  median=${ms(stats.median)}  ` +
-			`p95=${ms(stats.p95)}  max=${ms(stats.max)}  mean=${ms(stats.mean)}`,
+		`p95=${ms(stats.p95)}  max=${ms(stats.max)}  mean=${ms(stats.mean)}`,
 	);
 }
 
@@ -201,13 +201,13 @@ function reportFsCounts(counters: FsCounters, inputs: number): void {
 	info(
 		"fs calls / build",
 		`total=${total}  exists=${counters.exists}  stat=${counters.stat}  ` +
-			`readFile=${counters.readFile}  readFileBuffer=${counters.readFileBuffer}`,
+		`readFile=${counters.readFile}  readFileBuffer=${counters.readFileBuffer}`,
 	);
 	const per = (n: number): string => (inputs ? (n / inputs).toFixed(1) : "—");
 	info(
 		"fs calls / bundled input",
 		`inputs=${inputs}  total/in=${per(total)}  exists/in=${per(counters.exists)}  ` +
-			`stat/in=${per(counters.stat)}`,
+		`stat/in=${per(counters.stat)}`,
 	);
 }
 

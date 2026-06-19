@@ -27,7 +27,7 @@
  * unreachable the script prints a warning and exits without failing.
  */
 
-import { getProjectRoot, install, readDepsFromPackageJson } from "../src/install";
+import { getProjectRoot, install, readDepsFromPackageJson } from "../src/toolchain/install";
 import {
 	createTypecheckSession,
 	loadLibFilesFromCDN,
@@ -37,7 +37,7 @@ import {
 	summarizeDiagnostics,
 	type TypecheckResult,
 	type TypecheckSessionOptions,
-} from "../src/typecheck";
+} from "../src/toolchain/typecheck";
 import type { NodeUnionFs } from "./helpers";
 import { loadFixture, type Workspace } from "./helpers";
 
@@ -103,7 +103,7 @@ function reportStats(label: string, stats: Stats): void {
 	info(
 		label,
 		`n=${stats.runs}  min=${ms(stats.min)}  median=${ms(stats.median)}  ` +
-			`p95=${ms(stats.p95)}  max=${ms(stats.max)}  mean=${ms(stats.mean)}`,
+		`p95=${ms(stats.p95)}  max=${ms(stats.max)}  mean=${ms(stats.mean)}`,
 	);
 }
 

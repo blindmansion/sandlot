@@ -14,7 +14,7 @@
  */
 
 import type { Transferable } from "bun";
-import { createConsoleHostFunctions } from "../host-functions/console";
+import { createConsoleHostFunctions } from "../../host-functions/console";
 import { generateGuestPreamble } from "./guest-preamble";
 import type {
 	CallbackInvokeMessage,

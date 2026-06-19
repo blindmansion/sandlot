@@ -6,9 +6,9 @@
  * on string paths and string content (no binary/buffer variants).
  */
 
-import type { HostFunction } from "../run/types";
-import { defineHostFunction } from "../run/types";
-import type { UnionFileSystem } from "../types";
+import type { HostFunction } from "../toolchain/run/types";
+import { defineHostFunction } from "../toolchain/run/types";
+import type { UnionFileSystem } from "../toolchain/types";
 
 export type FsWatchEvent =
 	| { type: "write"; path: string }

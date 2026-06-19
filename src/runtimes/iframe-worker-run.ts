@@ -6,9 +6,10 @@
  * `IframeOrchestrator` while using a browser `postMessage` boundary.
  */
 
-import { HostSessionManager } from "../run/host-handler";
-import type { Transport } from "../run/protocol";
-import type { HostFunction, RunCodeResult, RunFn } from "../run/types";
+import { HostSessionManager } from "../toolchain/run/host-handler";
+import type { Transferable } from "bun";
+import type { Transport } from "../toolchain/run/protocol";
+import type { HostFunction, RunCodeResult, RunFn } from "../toolchain/run/types";
 
 let nextChannelId = 0;
 
@@ -19,6 +20,22 @@ function makeChannelId(): string {
 interface IframeWorkerTransport extends Transport {
 	ready: Promise<void>;
 }
+
+type IframeWorkerContentWindow = {
+	postMessage(message: unknown, targetOrigin: string, transfer?: Transferable[]): void;
+};
+
+declare const window: {
+	addEventListener(type: "message", listener: (event: MessageEvent) => void): void;
+	removeEventListener(type: "message", listener: (event: MessageEvent) => void): void;
+};
+
+export type IframeWorkerFrame = {
+	contentWindow: IframeWorkerContentWindow | null;
+	getAttribute(name: string): string | null;
+	setAttribute(name: string, value: string): void;
+	srcdoc: string;
+};
 
 function withTimeout<T>(
 	promise: Promise<T>,
@@ -38,7 +55,7 @@ function withTimeout<T>(
 }
 
 function createIframeWorkerTransport(
-	iframe: HTMLIFrameElement,
+	iframe: IframeWorkerFrame,
 	channelId: string,
 ): IframeWorkerTransport {
 	let handler: ((msg: unknown) => void) | null = null;
@@ -105,7 +122,7 @@ export interface IframeWorkerRunOptions {
  * sandboxed iframe.
  */
 export function createIframeWorkerRunFn(
-	iframe: HTMLIFrameElement,
+	iframe: IframeWorkerFrame,
 	options?: IframeWorkerRunOptions,
 ): RunFn {
 	const sandboxTokens = new Set(

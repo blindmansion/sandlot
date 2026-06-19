@@ -6,16 +6,16 @@
  * {@link createSandHostFunctions} composes them into a single array.
  */
 
-import type { BundleFn } from "../bundle";
-import type { HostFunction } from "../run/types";
-import type { RunFn } from "../run/types";
-import type { UnionFileSystem } from "../types";
+import type { BundleFn } from "../toolchain/bundle";
+import type { HostFunction } from "../toolchain/run/types";
+import type { RunFn } from "../toolchain/run/types";
+import type { UnionFileSystem } from "../toolchain/types";
 import { createFsHostFunctions } from "./fs";
 
 export {
 	type GenerateDtsOptions,
 	generateHostFunctionDts,
-} from "../run/dts";
+} from "../toolchain/run/dts";
 export { createConsoleHostFunctions } from "./console";
 export { createFsHostFunctions } from "./fs";
 

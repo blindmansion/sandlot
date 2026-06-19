@@ -19,14 +19,14 @@ import type {
 	BundleFileSystem,
 	BundleMkdirOptions,
 	FileContent,
-} from "./bundle/fs";
+} from "../../src/toolchain/bundle/fs";
 import type {
 	InstallFileSystem,
 	InstallMkdirOptions,
 	InstallRmOptions,
-} from "./install/fs";
-import type { TypecheckFileSystem } from "./typecheck/fs";
-import { dirname, isAbsolute, normalize } from "./util";
+} from "../../src/toolchain/install/fs";
+import type { TypecheckFileSystem } from "../../src/toolchain/typecheck/fs";
+import { dirname, isAbsolute, normalize } from "../../src/toolchain/util";
 
 /**
  * The superset stat shape. It carries every field any of the three module stat
@@ -67,8 +67,7 @@ function toBytes(content: FileContent): Uint8Array {
  * @see {@link TypecheckFileSystem}
  */
 export class MemoryUnionFs
-	implements InstallFileSystem, BundleFileSystem, TypecheckFileSystem
-{
+	implements InstallFileSystem, BundleFileSystem, TypecheckFileSystem {
 	private data = new Map<string, Entry>();
 
 	constructor(initialFiles?: Record<string, FileContent>) {

@@ -13,7 +13,7 @@
  */
 
 import { createNativeRunFn, type NativeRunResult } from "../../src/runtimes/native";
-import type { HostFunction, LogEntry, RunError } from "../../src/run/types";
+import type { HostFunction, LogEntry, RunError } from "../../src/toolchain/run/types";
 
 /** Result of executing a bundle. */
 export interface RunResult<T = unknown> {

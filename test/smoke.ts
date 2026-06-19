@@ -14,13 +14,13 @@
  */
 
 import * as esbuild from "esbuild";
-import { createBundleFn } from "../src/bundle";
-import { getProjectRoot, install, readDepsFromPackageJson } from "../src/install";
+import { createBundleFn } from "../src/toolchain/bundle";
+import { getProjectRoot, install, readDepsFromPackageJson } from "../src/toolchain/install";
 import {
 	createTypecheckSession,
 	formatDiagnostics,
 	summarizeDiagnostics,
-} from "../src/typecheck";
+} from "../src/toolchain/typecheck";
 import {
 	createWorkspace,
 	loadFixture,
