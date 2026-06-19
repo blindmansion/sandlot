@@ -67,7 +67,6 @@ function classifyError(error: unknown): { status: Status; detail: string } {
 /** Run a CommonJS bundle in the browser and return its exports. */
 function runCjs<T>(code: string): T {
 	const module: { exports: T } = { exports: {} as T };
-	// biome-ignore lint/security/noGlobalEval: trusted, test-authored bundle.
 	const fn = new Function(
 		"module",
 		"exports",
@@ -224,10 +223,10 @@ async function installSection(
 		await fs.writeFile(
 			"/src/with-dep.ts",
 			'import isNumber from "is-number";\n' +
-				'import { double } from "./math";\n\n' +
-				"export function check(value: unknown): string {\n" +
-				"\treturn isNumber(value) ? `number:${double(Number(value))}` : 'not a number';\n" +
-				"}\n",
+			'import { double } from "./math";\n\n' +
+			"export function check(value: unknown): string {\n" +
+			"\treturn isNumber(value) ? `number:${double(Number(value))}` : 'not a number';\n" +
+			"}\n",
 		);
 		const result = await bundle({
 			fs,

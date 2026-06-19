@@ -82,7 +82,7 @@ function createCapturingConsole(logs: ConsoleEntry[]): Console {
 function defaultRequire(id: string): never {
 	throw new Error(
 		`require("${id}") is not available in the bundle runner. ` +
-			`Pass a custom \`require\` via run options, or bundle the dependency in.`,
+		`Pass a custom \`require\` via run options, or bundle the dependency in.`,
 	);
 }
 
@@ -121,7 +121,6 @@ export function runBundle<T = unknown>(
 	];
 	const body = `"use strict";\n${code}\n;return module.exports;`;
 
-	// biome-ignore lint/security/noGlobalEval: intentional code execution harness
 	const fn = new Function(...paramNames, body) as (
 		...args: unknown[]
 	) => T;
