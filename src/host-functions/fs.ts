@@ -101,6 +101,7 @@ export function createFsHostFunctions(fs: UnionFileSystem): HostFunction[] {
 			path: ["Sand", "fs", "readFile"],
 			fn: (path: string) => fs.readFile(path),
 			dts: "(path: string) => Promise<string>",
+			doc: "Read a file's contents as UTF-8 text.\n\n@param path Absolute path to the file.\n@returns The file contents.",
 		}),
 
 		defineHostFunction({
@@ -110,12 +111,14 @@ export function createFsHostFunctions(fs: UnionFileSystem): HostFunction[] {
 				emit({ type: "write", path });
 			},
 			dts: "(path: string, content: string) => Promise<void>",
+			doc: "Write UTF-8 text to a file, creating or overwriting it.\n\n@param path Absolute path to the file.\n@param content The text to write.",
 		}),
 
 		defineHostFunction({
 			path: ["Sand", "fs", "exists"],
 			fn: (path: string) => fs.exists(path),
 			dts: "(path: string) => Promise<boolean>",
+			doc: "Check whether a path exists.",
 		}),
 
 		defineHostFunction({
@@ -129,12 +132,14 @@ export function createFsHostFunctions(fs: UnionFileSystem): HostFunction[] {
 				};
 			},
 			dts: "(path: string) => Promise<{ isFile: boolean; isDirectory: boolean; isSymbolicLink: boolean; mode: number; size: number }>",
+			doc: "Get metadata about a path (file/directory/symlink flags).",
 		}),
 
 		defineHostFunction({
 			path: ["Sand", "fs", "readdir"],
 			fn: (path: string) => fs.readdir(path),
 			dts: "(path: string) => Promise<string[]>",
+			doc: "List the entry names of a directory.",
 		}),
 
 		defineHostFunction({
@@ -144,6 +149,7 @@ export function createFsHostFunctions(fs: UnionFileSystem): HostFunction[] {
 				emit({ type: "mkdir", path });
 			},
 			dts: "(path: string, options?: { recursive?: boolean }) => Promise<void>",
+			doc: "Create a directory.\n\n@param options Pass `{ recursive: true }` to create parent directories.",
 		}),
 
 		defineHostFunction({
@@ -156,6 +162,7 @@ export function createFsHostFunctions(fs: UnionFileSystem): HostFunction[] {
 				emit({ type: "rm", path });
 			},
 			dts: "(path: string, options?: { recursive?: boolean; force?: boolean }) => Promise<void>",
+			doc: "Remove a file or directory.\n\n@param options `{ recursive: true }` to remove directories, `{ force: true }` to ignore missing paths.",
 		}),
 
 		defineHostFunction({
@@ -175,12 +182,14 @@ export function createFsHostFunctions(fs: UnionFileSystem): HostFunction[] {
 				return id;
 			},
 			dts: '(path: string, callback: (event: { type: "write" | "append" | "mkdir" | "rm" | "cp" | "mv"; path: string; sourcePath?: string }) => void, options?: { recursive?: boolean }) => Promise<string>',
+			doc: "Watch a path for changes, invoking `callback` on each event.\n\n@returns A watcher id to pass to `unwatch`.",
 		}),
 
 		defineHostFunction({
 			path: ["Sand", "fs", "unwatch"],
 			fn: (id: string): boolean => deleteWatcher(id),
 			dts: "(id: string) => Promise<boolean>",
+			doc: "Stop a watcher previously created with `watch`.",
 		}),
 	];
 }

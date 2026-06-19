@@ -17,6 +17,8 @@ interface NamespaceNode {
 	children: Map<string, NamespaceNode>;
 	/** If this node is a leaf, the callable type signature (e.g. "(x: number) => string") */
 	signature?: string;
+	/** If this node is a leaf, optional documentation rendered as a JSDoc comment. */
+	doc?: string;
 }
 
 function createNode(): NamespaceNode {
@@ -63,7 +65,10 @@ function emitNode(
 	const prefix = topLevel ? "declare " : "";
 
 	if (node.signature !== undefined && node.children.size === 0) {
-		// Leaf node — emit as a function declaration
+		// Leaf node — emit an optional JSDoc comment then a function declaration
+		if (node.doc) {
+			lines.push(...formatJsDoc(node.doc, indent));
+		}
 		const { params, returnType } = parseSignature(node.signature);
 		const finalReturn =
 			wrapAsync && !isPromiseType(returnType)
@@ -91,6 +96,26 @@ function emitNode(
  */
 function isPromiseType(returnType: string): boolean {
 	return /^\s*Promise\s*</.test(returnType);
+}
+
+/**
+ * Render a documentation string as JSDoc comment lines at the given indent.
+ *
+ * Each line of the (possibly multi-line) doc becomes a ` * ...` line. Returns
+ * an empty array for blank docs so callers can spread unconditionally.
+ */
+function formatJsDoc(doc: string, indent: string): string[] {
+	const trimmed = doc.replace(/\s+$/, "");
+	if (trimmed.trim() === "") return [];
+
+	const lines = [`${indent}/**`];
+	for (const line of trimmed.split("\n")) {
+		// Guard against accidentally terminating the comment block early.
+		const safe = line.replace(/\*\//g, "*\\/");
+		lines.push(safe === "" ? `${indent} *` : `${indent} * ${safe}`);
+	}
+	lines.push(`${indent} */`);
+	return lines;
 }
 
 export interface GenerateDtsOptions {
@@ -143,6 +168,7 @@ export function generateHostFunctionDts(
 		}
 		const leafNode = current.children.get(leaf) as NamespaceNode;
 		leafNode.signature = hf.dts;
+		leafNode.doc = hf.doc;
 	}
 
 	// Emit declarations

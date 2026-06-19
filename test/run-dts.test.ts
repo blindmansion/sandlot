@@ -84,6 +84,21 @@ test("injected declarations make host globals typecheck cleanly", async () => {
 	expect(summarizeDiagnostics(diagnostics).errorCount).toBe(0);
 });
 
+test("host-function docs become JSDoc comments in the declarations", () => {
+	const fs = new MemoryUnionFs();
+	const dts = generateHostFunctionDts(createSandHostFunctions({ fs }), {
+		async: true,
+	});
+
+	// The JSDoc block is emitted immediately above the declared function.
+	expect(dts).toContain("/**");
+	expect(dts).toContain(" * Read a file's contents as UTF-8 text.");
+	expect(dts).toContain(" * @param path Absolute path to the file.");
+	expect(dts).toMatch(
+		/\/\*\*[\s\S]*?Read a file's contents[\s\S]*?\*\/\s*\n\s*function readFile\(/,
+	);
+});
+
 test("injected declarations enforce host-function signatures", async () => {
 	// `readFile` resolves to a string; assigning it to a number must error.
 	const badSource = [

@@ -39,6 +39,17 @@ export interface HostFunction {
 	 */
 	dts: string;
 
+	/**
+	 * Optional human-readable documentation for this function. When the ambient
+	 * declarations are generated (see `generateHostFunctionDts`), this becomes a
+	 * JSDoc comment above the function — useful when the `.d.ts` is surfaced in
+	 * an editor or written to a real filesystem. Multi-line strings are
+	 * supported; each line becomes a line of the JSDoc block.
+	 *
+	 * @example "Read a file's contents as UTF-8 text."
+	 */
+	doc?: string;
+
 	// --- Host-side hooks (cross-boundary runners only) ---
 	//
 	// These hooks run on the **host** (main thread) during cross-boundary
@@ -158,6 +169,7 @@ export function defineHostFunction<TArgs extends unknown[], TReturn>(config: {
 	path: string[];
 	fn: (...args: TArgs) => TReturn;
 	dts: string;
+	doc?: string;
 	deserializeArgs?: (args: unknown[]) => TArgs | Promise<TArgs>;
 	serializeReturn?: (result: Awaited<TReturn>) => unknown | Promise<unknown>;
 	getTransferables?: (result: unknown) => Transferable[];
