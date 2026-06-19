@@ -5,6 +5,7 @@ import {
 	LitElement,
 	type TemplateResult,
 } from "lit";
+import { customElement, property } from "lit/decorators.js";
 import { classMap } from "lit/directives/class-map.js";
 import { repeat } from "lit/directives/repeat.js";
 import { pluralize } from "../utils/format";
@@ -15,6 +16,7 @@ export interface TodoItem {
 	done: boolean;
 }
 
+@customElement("todo-list")
 export class TodoList extends LitElement {
 	static styles: CSSResultGroup = css`
 		.done {
@@ -23,16 +25,8 @@ export class TodoList extends LitElement {
 		}
 	`;
 
-	static properties = {
-		items: { attribute: false },
-	};
-
-	declare items: TodoItem[];
-
-	constructor() {
-		super();
-		this.items = [];
-	}
+	@property({ attribute: false })
+	accessor items: TodoItem[] = [];
 
 	private toggle(id: number): void {
 		this.items = this.items.map((item) =>
@@ -68,8 +62,6 @@ export class TodoList extends LitElement {
 		`;
 	}
 }
-
-customElements.define("todo-list", TodoList);
 
 declare global {
 	interface HTMLElementTagNameMap {

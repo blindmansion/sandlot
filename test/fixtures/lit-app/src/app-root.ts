@@ -5,6 +5,7 @@ import {
 	LitElement,
 	type TemplateResult,
 } from "lit";
+import { customElement, state } from "lit/decorators.js";
 import "./components/greeting-card";
 import "./components/counter-button";
 import "./components/todo-list";
@@ -17,6 +18,7 @@ const SEED_TODOS: TodoItem[] = [
 	{ id: 3, label: "Ship the widget", done: false },
 ];
 
+@customElement("app-root")
 export class AppRoot extends LitElement {
 	static styles: CSSResultGroup = css`
 		:host {
@@ -28,17 +30,10 @@ export class AppRoot extends LitElement {
 		}
 	`;
 
-	static properties = {
-		expanded: { state: true },
-	};
+	@state()
+	private accessor expanded = true;
 
-	declare expanded: boolean;
 	private readonly clock = new ClockController(this);
-
-	constructor() {
-		super();
-		this.expanded = true;
-	}
 
 	private toggle(): void {
 		this.expanded = !this.expanded;
@@ -61,8 +56,6 @@ export class AppRoot extends LitElement {
 		`;
 	}
 }
-
-customElements.define("app-root", AppRoot);
 
 declare global {
 	interface HTMLElementTagNameMap {

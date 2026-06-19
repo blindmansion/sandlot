@@ -1,20 +1,14 @@
 import { html, LitElement, type TemplateResult } from "lit";
+import { customElement, property, state } from "lit/decorators.js";
 import { formatCount } from "../utils/format";
 
+@customElement("counter-button")
 export class CounterButton extends LitElement {
-	static properties = {
-		step: { type: Number },
-		count: { state: true },
-	};
+	@property({ type: Number })
+	accessor step = 1;
 
-	declare step: number;
-	declare count: number;
-
-	constructor() {
-		super();
-		this.step = 1;
-		this.count = 0;
-	}
+	@state()
+	private accessor count = 0;
 
 	private increment(): void {
 		this.count += this.step;
@@ -35,8 +29,6 @@ export class CounterButton extends LitElement {
 		`;
 	}
 }
-
-customElements.define("counter-button", CounterButton);
 
 declare global {
 	interface HTMLElementTagNameMap {
