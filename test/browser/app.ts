@@ -530,6 +530,126 @@ async function installSection(
 }
 
 // ---------------------------------------------------------------------------
+// Section 6 — Live demo (install + bundle + render a real Lit app, visibly)
+// ---------------------------------------------------------------------------
+
+/**
+ * End-to-end showcase: pull the committed `lit-app` fixture into an in-memory
+ * filesystem, install `lit` (and its deps) from npm, bundle it, then mount the
+ * result into a *visible, persistent* iframe so you can actually interact with
+ * the rendered widget.
+ *
+ * Unlike {@link renderSection} (which renders into a hidden, torn-down iframe
+ * and verifies via the console bridge), this leaves the render alive: the
+ * handle is never closed and the iframe is never removed.
+ */
+async function liveDemoSection(
+	bundle: ReturnType<typeof createBundleFn>,
+): Promise<Check[]> {
+	const section = "demo";
+	const checks: Check[] = [];
+
+	const frame = document.getElementById("demo-frame");
+	const statusEl = document.getElementById("demo-status");
+	const setStatus = (text: string) => {
+		if (statusEl) statusEl.textContent = text;
+	};
+
+	if (!(frame instanceof HTMLIFrameElement)) {
+		checks.push({
+			section,
+			label: "live demo iframe is present",
+			status: "fail",
+			detail: "#demo-frame not found",
+		});
+		return checks;
+	}
+
+	try {
+		setStatus("Loading the lit-app fixture…");
+		const res = await fetch("./lit-fixture.json");
+		if (!res.ok) {
+			throw new Error(`failed to load lit fixture (${res.status})`);
+		}
+		const litFiles = (await res.json()) as Record<string, string>;
+		const fs = new MemoryUnionFs(litFiles);
+		checks.push({
+			section,
+			label: "loaded the lit-app fixture into memory",
+			status: Object.keys(litFiles).length > 0 ? "pass" : "fail",
+			detail: `${Object.keys(litFiles).length} files`,
+		});
+
+		setStatus("Installing lit from npm…");
+		const root = await getProjectRoot({ cwd: "/", fs });
+		const specs = root ? readDepsFromPackageJson(root.packageJson) : [];
+		const installed = await install(fs, specs, {
+			nodeModulesPath: "/node_modules",
+			projectName: root?.name ?? "lit-app-fixture",
+		});
+		checks.push({
+			section,
+			label: "installed lit and its dependencies",
+			status: installed.some((r) => r.name === "lit") ? "pass" : "fail",
+			detail: installed.map((r) => `${r.name}@${r.version}`).join(", "),
+		});
+
+		setStatus("Bundling the widget…");
+		// Mount into the render iframe's `#root` (the committed fixture targets
+		// `#app`, so we add a tiny entry instead of editing the fixture).
+		await fs.writeFile(
+			"/src/render-entry.ts",
+			'import "./app-root";\n' +
+			'const root = document.getElementById("root");\n' +
+			'if (root) root.appendChild(document.createElement("app-root"));\n',
+		);
+		// Target es2022 (not the default esnext) so esbuild *lowers* the Lit
+		// standard decorators + `accessor` fields into runtime code. The render
+		// path executes via `new Function`, and no JS engine parses the
+		// decorators proposal syntax natively yet — esnext would leave the `@`
+		// in place and throw "Invalid or unexpected token" at mount time.
+		const { code, css } = await bundle({
+			fs,
+			entryPoint: "/src/render-entry.ts",
+			entryResolveDir: "/",
+			options: { format: "esm", platform: "browser", target: "es2022" },
+		});
+		checks.push({
+			section,
+			label: "bundled the lit widget",
+			status: code.length > 0 ? "pass" : "fail",
+			detail: `${code.length} bytes`,
+		});
+
+		setStatus("Mounting…");
+		const render = createIframeRenderFn(frame);
+		const handle = render({ code, css });
+		const result = await handle.result;
+		checks.push({
+			section,
+			label: "mounted the live lit widget into a visible iframe",
+			status: result.ok ? "pass" : "fail",
+			detail: result.ok
+				? "rendered"
+				: (result.error?.message ?? "render failed"),
+		});
+		// Intentionally leave the handle open and the iframe in the page so the
+		// widget stays live and interactive.
+		setStatus(
+			result.ok
+				? "Live Lit widget mounted below — try the buttons."
+				: `Render failed: ${result.error?.message ?? "unknown error"}`,
+		);
+	} catch (error) {
+		const { status, detail } = classifyError(error);
+		checks.push({ section, label: "live lit demo", status, detail });
+		setStatus(`Skipped: ${detail}`);
+	}
+
+	return checks;
+}
+
+// ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
 
@@ -579,6 +699,7 @@ async function main(): Promise<void> {
 		() => runnerSection(fs, bundle),
 		() => renderSection(fs, bundle),
 		() => installSection(fs, bundle),
+		() => liveDemoSection(bundle),
 	];
 
 	render(checks, false);

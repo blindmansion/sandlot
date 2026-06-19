@@ -33,10 +33,20 @@ export class AppRoot extends LitElement {
 	@state()
 	private accessor expanded = true;
 
+	@state()
+	private accessor todos: TodoItem[] = SEED_TODOS;
+
 	private readonly clock = new ClockController(this);
 
 	private toggle(): void {
 		this.expanded = !this.expanded;
+	}
+
+	private onToggleItem(event: CustomEvent<number>): void {
+		const id = event.detail;
+		this.todos = this.todos.map((item) =>
+			item.id === id ? { ...item, done: !item.done } : item,
+		);
 	}
 
 	render(): TemplateResult {
@@ -50,7 +60,10 @@ export class AppRoot extends LitElement {
 			${this.expanded
 				? html`
 						<counter-button .step=${2}></counter-button>
-						<todo-list .items=${SEED_TODOS}></todo-list>
+						<todo-list
+							.items=${this.todos}
+							@toggle-item=${this.onToggleItem}
+						></todo-list>
 					`
 				: null}
 		`;

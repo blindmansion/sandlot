@@ -12,11 +12,27 @@
  * ```
  */
 
-import { file } from "bun";
-import { dirname, join } from "node:path";
+import { file, Glob } from "bun";
+import { dirname, join, sep } from "node:path";
 
 const here = dirname(new URL(import.meta.url).pathname);
 const outdir = join(here, "dist");
+const litFixtureDir = join(here, "..", "fixtures", "lit-app");
+
+/**
+ * Read the committed `lit-app` fixture into a `{ "/path": contents }` map so the
+ * browser page can seed it into an in-memory filesystem. The page can't read
+ * disk, but this server can — so we expose the fixture as a JSON asset.
+ */
+async function readLitFixture(): Promise<Record<string, string>> {
+	const files: Record<string, string> = {};
+	const glob = new Glob("**/*");
+	for await (const rel of glob.scan({ cwd: litFixtureDir, onlyFiles: true })) {
+		const posix = rel.split(sep).join("/");
+		files[`/${posix}`] = await file(join(litFixtureDir, rel)).text();
+	}
+	return files;
+}
 
 const built = await Bun.build({
 	entrypoints: [join(here, "index.html")],
@@ -32,6 +48,9 @@ if (!built.success) {
 const server = Bun.serve({
 	async fetch(req) {
 		const url = new URL(req.url);
+		if (url.pathname === "/lit-fixture.json") {
+			return Response.json(await readLitFixture());
+		}
 		const path = url.pathname === "/" ? "/index.html" : url.pathname;
 		const asset = file(join(outdir, path));
 		if (await asset.exists()) return new Response(asset);

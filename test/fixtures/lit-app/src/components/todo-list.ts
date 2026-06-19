@@ -28,9 +28,16 @@ export class TodoList extends LitElement {
 	@property({ attribute: false })
 	accessor items: TodoItem[] = [];
 
+	// Controlled component: the owner of `items` reacts to this event and pushes
+	// down the updated list. Toggling local state here would be clobbered the
+	// next time the owner re-renders (Lit re-commits object props every render).
 	private toggle(id: number): void {
-		this.items = this.items.map((item) =>
-			item.id === id ? { ...item, done: !item.done } : item,
+		this.dispatchEvent(
+			new CustomEvent<number>("toggle-item", {
+				detail: id,
+				bubbles: true,
+				composed: true,
+			}),
 		);
 	}
 
