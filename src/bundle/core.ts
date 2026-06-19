@@ -11,7 +11,9 @@ import type { BundleFileSystem } from "./fs";
 import {
 	createFileSystemPlugin,
 	createNativeImportTracker,
+	createResolveCache,
 	type NativeImportTracker,
+	type ResolveCache,
 } from "./plugin";
 import type {
 	BundleArgs,
@@ -136,6 +138,12 @@ export interface PreparedBuild {
 	 * rebuild reflects only that build.
 	 */
 	nativeTracker: NativeImportTracker;
+	/**
+	 * Resolution cache shared with the filesystem plugin. The one-shot path
+	 * ignores it (a fresh cache per call); a {@link BundleSession} keeps it to
+	 * retain resolutions across rebuilds and invalidate them on notification.
+	 */
+	resolveCache: ResolveCache;
 }
 
 /**
@@ -161,6 +169,7 @@ export function prepareBuild(args: {
 	);
 
 	const nativeTracker = createNativeImportTracker();
+	const resolveCache = createResolveCache();
 
 	const buildOptions: Parameters<EsbuildAPI["build"]>[0] = {
 		entryPoints: [entryPoint],
@@ -186,6 +195,7 @@ export function prepareBuild(args: {
 					virtualFiles,
 				},
 				nativeTracker,
+				resolveCache,
 			),
 		],
 		metafile: true,
@@ -196,7 +206,7 @@ export function prepareBuild(args: {
 		buildOptions.outfile = options.outfile;
 	}
 
-	return { buildOptions, nativeTracker };
+	return { buildOptions, nativeTracker, resolveCache };
 }
 
 /**

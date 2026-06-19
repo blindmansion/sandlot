@@ -168,12 +168,32 @@ export type BundleFn = (args: BundleArgs) => Promise<BundleResult>;
  * A persistent, incremental bundler bound to a fixed entry point and filesystem.
  *
  * Mutate the filesystem, then call {@link BundleSession.rebuild}; esbuild reuses
- * its cached parse/codegen for unchanged inputs. Always {@link
- * BundleSession.dispose} when finished to release the underlying build context.
+ * its cached parse/codegen for unchanged inputs, and the session reuses cached
+ * module *resolution* (stat probes, parsed package.json, bare-import decisions)
+ * for everything the caller did not report as changed.
+ *
+ * Contract: notifications must mirror the filesystem — mutate the file, then
+ * notify (`changed`/`created`/`deleted`). After a dependency install/uninstall,
+ * call {@link BundleSession.invalidate}. Un-notified structural changes (a new,
+ * deleted, or renamed module) yield stale resolution; a pure content edit to an
+ * already-resolved file needs no notification, since contents are re-read on
+ * every rebuild. Notifications are synchronous — they only queue an invalidation
+ * applied at the next `rebuild()`; no I/O happens at notify time.
+ *
+ * Always {@link BundleSession.dispose} when finished to release the underlying
+ * build context.
  */
 export interface BundleSession {
 	/** Re-bundle, reusing cached work for inputs that did not change. */
 	rebuild(): Promise<BundleResult>;
+	/** Report that an existing, already-resolved file's content changed. */
+	changed(path: string): void;
+	/** Report that a new file was created (so a prior negative probe is dropped). */
+	created(path: string): void;
+	/** Report that a file was deleted (so a prior positive probe is dropped). */
+	deleted(path: string): void;
+	/** Drop all cached resolution. Use after a dependency install/uninstall. */
+	invalidate(): void;
 	/** Release the underlying esbuild build context. Safe to call repeatedly. */
 	dispose(): Promise<void>;
 }

@@ -62,32 +62,80 @@ export function getLoaderFromPath(path: string): esbuild.Loader {
 	return LOADER_MAP[extname(path)] ?? "js";
 }
 
-// ---------- Per-build resolution cache ----------
+// ---------- Resolution cache ----------
 
 /**
- * Memoizes filesystem probes for the duration of a *single* build.
+ * Memoizes the resolver's filesystem probes so repeated imports don't re-issue
+ * the same (async, and on the wasm path, boundary-crossing) `BundleFileSystem`
+ * calls. The resolver asks the same questions over and over across hundreds of
+ * imports: does `<dir>/node_modules/<pkg>` exist, what does this package.json
+ * contain, is `<path>.ts` a file?
  *
- * The resolver asks the same questions over and over across hundreds of imports:
- * does `<dir>/node_modules/<pkg>` exist, what does this package.json contain, is
- * `<path>.ts` a file? Because the filesystem cannot change mid-build, caching
- * those answers is always correct and avoids re-issuing the (async, and on the
- * wasm path, boundary-crossing) `BundleFileSystem` calls.
+ * Within a single build the answers cannot change, so caching them is always
+ * correct. Across rebuilds in a persistent {@link BundleSession} the cache is
+ * *retained* and invalidated surgically: the caller reports filesystem changes
+ * via `markDirty`/`markFullReset` and the plugin applies them (`applyPending`)
+ * at the start of the next build. We deliberately do NOT cache file *contents* —
+ * `onLoad` re-reads every time, leaving content caching to the filesystem
+ * backing.
  *
- * This is deliberately scoped to one build and never persisted: cross-build or
- * cross-backing caching is the filesystem implementation's concern, not ours, so
- * there is nothing to invalidate here.
+ * In the one-shot path a fresh cache is created per build, so nothing is ever
+ * pending and the persistence machinery is inert.
  */
-interface ResolveCache {
+export interface ResolveCache {
 	/** path → stat, or `null` when the path does not exist. */
 	stat: Map<string, BundleFileStat | null>;
 	/** package dir → parsed package.json, or `null` when absent/unparseable. */
 	pkgJson: Map<string, Record<string, unknown> | null>;
 	/** `${startDir}\0${specifier}` → bare-import resolution result. */
 	bare: Map<string, esbuild.OnResolveResult>;
+	/**
+	 * Queue a single project-file path for invalidation. Only its `stat` entry is
+	 * dropped; the next build re-probes that exact candidate and recomputes any
+	 * relative resolution that depended on it.
+	 */
+	markDirty(path: string): void;
+	/**
+	 * Queue a full reset (clear all three maps). Used for `node_modules` /
+	 * `package.json` changes, where bare-import decisions and parsed manifests may
+	 * be affected, and for explicit `invalidate()`.
+	 */
+	markFullReset(): void;
+	/** Apply queued invalidations. Called from the plugin's `onStart`. */
+	applyPending(): void;
 }
 
-function createResolveCache(): ResolveCache {
-	return { stat: new Map(), pkgJson: new Map(), bare: new Map() };
+export function createResolveCache(): ResolveCache {
+	const stat = new Map<string, BundleFileStat | null>();
+	const pkgJson = new Map<string, Record<string, unknown> | null>();
+	const bare = new Map<string, esbuild.OnResolveResult>();
+	const dirtyPaths = new Set<string>();
+	let fullReset = false;
+
+	return {
+		stat,
+		pkgJson,
+		bare,
+		markDirty(path: string) {
+			dirtyPaths.add(path);
+		},
+		markFullReset() {
+			fullReset = true;
+		},
+		applyPending() {
+			if (fullReset) {
+				stat.clear();
+				pkgJson.clear();
+				bare.clear();
+			} else {
+				for (const path of dirtyPaths) {
+					stat.delete(path);
+				}
+			}
+			dirtyPaths.clear();
+			fullReset = false;
+		},
+	};
 }
 
 /**
@@ -373,6 +421,9 @@ export function createNativeImportTracker(): NativeImportTracker {
  * @param fs - The filesystem to read source files from
  * @param options - Resolution directories for entry and package lookups
  * @param nativeTracker - Optional tracker for native module imports
+ * @param cache - Optional resolution cache. Pass a persistent cache to retain
+ *   resolutions across rebuilds (a {@link BundleSession}); omit it for the
+ *   one-shot path, where a fresh per-build cache is created.
  */
 export function createFileSystemPlugin(
 	fs: BundleFileSystem,
@@ -383,25 +434,23 @@ export function createFileSystemPlugin(
 		virtualFiles?: VirtualFileMap;
 	},
 	nativeTracker?: NativeImportTracker,
+	cache: ResolveCache = createResolveCache(),
 ): esbuild.Plugin {
 	const { entryResolveDir, packageResolveDir, resolution, virtualFiles } =
 		options;
-	// One cache per build: createFileSystemPlugin is invoked once per
-	// bundleWithEsbuild call, so this is never reused across builds.
-	const cache = createResolveCache();
 	return {
 		name: "filesystem",
 		setup(build) {
 			// ---- Per-rebuild reset ----
 			// With a persistent BuildContext the plugin is set up once but the
-			// filesystem may change between rebuilds, so the per-build caches must
-			// be dropped at the start of every (re)build. onStart is guaranteed to
-			// run before any onResolve/onLoad in the same build.
+			// filesystem may change between rebuilds. The native-import tracker is
+			// rebuilt from scratch each time, while the resolution cache only drops
+			// the entries the caller reported as changed (applyPending) — unchanged
+			// resolutions survive across rebuilds. onStart is guaranteed to run
+			// before any onResolve/onLoad in the same build.
 			build.onStart(() => {
-				cache.stat.clear();
-				cache.pkgJson.clear();
-				cache.bare.clear();
 				nativeTracker?.reset();
+				cache.applyPending();
 			});
 
 			// ---- Resolve ----

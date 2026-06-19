@@ -388,6 +388,10 @@ async function profileEngine(
 		let editMismatch = 0;
 		for (let i = 0; i < EDIT_RUNS; i++) {
 			await args.fs.writeFile(editPath, editContent(i));
+			// Notify after mutating the fs, per the session contract. (A pure
+			// content edit to an already-resolved file would survive without this,
+			// but real callers notify uniformly, so we exercise that path.)
+			session.changed(editPath);
 			const [result, t] = await timed(() => session.rebuild());
 			persistentEdit.push(t);
 			// Cross-check against a one-shot build of the same edited input.
@@ -395,11 +399,71 @@ async function profileEngine(
 			if (bundleSignature(result) !== bundleSignature(fresh)) editMismatch++;
 		}
 		await args.fs.writeFile(editPath, editContent(0));
+		session.changed(editPath);
 		reportStats("edit", summarize(persistentEdit));
 		info(
 			"edit output matches one-shot",
 			editMismatch === 0 ? "yes (all iterations)" : `NO (${editMismatch})`,
 		);
+
+		// ── Create / delete correctness (resolution-cache invalidation) ──────
+		// The strongest test of the persistent cache: a file that *shadows* a
+		// directory module must win once created and lose once deleted. That only
+		// happens if the cached negative/positive stat probe is dropped on notify,
+		// so any staleness shows up as a mismatch against a fresh one-shot build.
+		banner(`${name} — create/delete correctness (cache invalidation)`);
+		const mutFs = args.fs as unknown as { rm(path: string): Promise<void> };
+		const dirModIndex = "/src/shadow/index.ts";
+		const shadowFile = "/src/shadow.ts";
+		let createDeleteOk = true;
+
+		const checkMatchesFresh = async (): Promise<void> => {
+			const [persistent, fresh] = [await session.rebuild(), await bundle(args)];
+			if (bundleSignature(persistent) !== bundleSignature(fresh)) {
+				createDeleteOk = false;
+			}
+		};
+
+		// Baseline: only the directory module exists, so "./shadow" → shadow/index.ts.
+		await args.fs.mkdir("/src/shadow", { recursive: true });
+		await args.fs.writeFile(dirModIndex, `export const FROM = "dir";\n`);
+		await args.fs.writeFile(
+			editPath,
+			`import { FROM } from "./shadow";\nexport const USED = FROM;\n`,
+		);
+		session.created(dirModIndex);
+		session.changed(editPath);
+		await checkMatchesFresh();
+
+		// Create the shadowing file; touch the importer so esbuild re-resolves.
+		// The cached negative probe for shadow.ts must be dropped for it to win.
+		await args.fs.writeFile(shadowFile, `export const FROM = "file";\n`);
+		await args.fs.writeFile(
+			editPath,
+			`import { FROM } from "./shadow";\nexport const USED = FROM; // r1\n`,
+		);
+		session.created(shadowFile);
+		session.changed(editPath);
+		await checkMatchesFresh();
+
+		// Delete the shadowing file; resolution must fall back to the directory.
+		await mutFs.rm(shadowFile);
+		await args.fs.writeFile(
+			editPath,
+			`import { FROM } from "./shadow";\nexport const USED = FROM; // r2\n`,
+		);
+		session.deleted(shadowFile);
+		session.changed(editPath);
+		await checkMatchesFresh();
+
+		info(
+			"create/delete output matches one-shot",
+			createDeleteOk ? "yes (create + delete)" : "NO (stale resolution)",
+		);
+
+		// Restore the baseline graph for the next engine.
+		await args.fs.writeFile(editPath, editContent(0));
+		session.changed(editPath);
 
 		// ── Speedup (persistent vs one-shot) ────────────────────────────
 		banner(`${name} — speedup (persistent vs one-shot, median)`);
