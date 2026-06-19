@@ -1,7 +1,7 @@
 /// <reference lib="dom" />
 /**
- * Browser smoke test for the three library modules — typecheck, bundle, and
- * install — all running against an in-memory {@link MemoryUnionFs} inside a
+ * Browser smoke test for the library modules — typecheck, bundle, run, render,
+ * and install — all running against an in-memory {@link MemoryUnionFs} inside a
  * Bun-bundled page.
  *
  * This is the browser analog of `test/smoke.ts`: it seeds a tiny project into
@@ -19,6 +19,7 @@ import {
 	readDepsFromPackageJson,
 } from "../../src/toolchain/install";
 import { MemoryUnionFs } from "../helpers/memory-fs";
+import { createIframeRenderFn } from "../../src/render";
 import { createIframeWorkerRunFn } from "../../src/runtimes/iframe-worker-run";
 import {
 	createTypecheckSession,
@@ -297,7 +298,159 @@ async function runnerSection(
 }
 
 // ---------------------------------------------------------------------------
-// Section 4 — Install + integration (network: npm registry)
+// Section 4 — Render (sandboxed iframe + DOM, network: esbuild-wasm binary)
+// ---------------------------------------------------------------------------
+
+/**
+ * Bundle a frontend snippet and mount it through the iframe render fn.
+ *
+ * Mirrors {@link bundleAndRun}, but uses the render module: the bundled code
+ * runs inside the iframe document (with a `#root` element and an optional
+ * `<style>` block) rather than in a headless Worker. The render iframe is
+ * sandboxed without `allow-same-origin`, so the parent page can't read its
+ * DOM — the snippet inspects its own DOM and reports back via the bridged
+ * `console`, which is what we assert on.
+ */
+async function bundleAndRender(
+	fs: MemoryUnionFs,
+	bundle: ReturnType<typeof createBundleFn>,
+	render: ReturnType<typeof createIframeRenderFn>,
+	path: string,
+	source: string,
+	options?: {
+		css?: string;
+		hostFunctions?: ReturnType<typeof createSandHostFunctions>;
+	},
+) {
+	await fs.writeFile(path, source);
+	const { code } = await bundle({
+		fs,
+		entryPoint: path,
+		entryResolveDir: "/",
+		options: { format: "esm", platform: "neutral" },
+	});
+	const handle = render({
+		code,
+		css: options?.css,
+		hostFunctions: options?.hostFunctions,
+	});
+	try {
+		return await handle.result;
+	} finally {
+		handle.close();
+	}
+}
+
+async function renderSection(
+	fs: MemoryUnionFs,
+	bundle: ReturnType<typeof createBundleFn>,
+): Promise<Check[]> {
+	const section = "render";
+	const checks: Check[] = [];
+
+	const iframe = document.createElement("iframe");
+	iframe.style.display = "none";
+	document.body.appendChild(iframe);
+	const render = createIframeRenderFn(iframe);
+
+	try {
+		// 1 + 2. Mount bundled frontend code into the iframe DOM and apply the
+		// injected CSS. The snippet inspects its own DOM and reports back.
+		const mounted = await bundleAndRender(
+			fs,
+			bundle,
+			render,
+			"/src/view.ts",
+			'const root = document.getElementById("root");\n' +
+			'root.innerHTML = `<h1 class="greeting">Hello, ${21 + 21}</h1>`;\n' +
+			'const h1 = root.querySelector("h1");\n' +
+			"console.log(`mounted: ${h1.textContent}`);\n" +
+			"console.log(`color: ${getComputedStyle(h1).color}`);\n" +
+			"export {};\n",
+			{ css: ".greeting { color: rgb(0, 128, 0); }" },
+		);
+		const mountedLines = mounted.log.map((l) => l.text);
+		checks.push({
+			section,
+			label: "mounted bundled frontend code into the iframe DOM",
+			status:
+				mounted.ok && mountedLines.some((t) => t.includes("mounted: Hello, 42"))
+					? "pass"
+					: "fail",
+			detail: mountedLines.join(" | ") || mounted.error?.message || "(no output)",
+		});
+		checks.push({
+			section,
+			label: "applied the injected CSS to the mounted DOM",
+			status:
+				mounted.ok && mountedLines.some((t) => t.includes("color: rgb(0, 128, 0)"))
+					? "pass"
+					: "fail",
+			detail:
+				mountedLines.find((t) => t.startsWith("color:")) ??
+				mounted.error?.message ??
+				"(no color reported)",
+		});
+
+		// 3. Bridge a Sand.fs host call from the rendered view back to the host.
+		const expectedLen = (await fs.readFile("/src/math.ts")).length;
+		const hostRendered = await bundleAndRender(
+			fs,
+			bundle,
+			render,
+			"/src/host-view.ts",
+			'const text = await Sand.fs.readFile("/src/math.ts");\n' +
+			'const root = document.getElementById("root");\n' +
+			"root.textContent = `math.ts has ${text.length} chars`;\n" +
+			"console.log(`rendered: ${root.textContent}`);\n" +
+			"export {};\n",
+			{ hostFunctions: createSandHostFunctions({ fs }) },
+		);
+		const bridged =
+			hostRendered.ok &&
+			hostRendered.log.some((l) =>
+				l.text.includes(`math.ts has ${expectedLen} chars`),
+			);
+		checks.push({
+			section,
+			label: "bridged a Sand.fs host call from a rendered view",
+			status: bridged ? "pass" : "fail",
+			detail:
+				hostRendered.log.map((l) => l.text).join(" | ") ||
+				hostRendered.error?.message ||
+				"(no output)",
+		});
+
+		// 4. A thrown error during render surfaces as a failed render.
+		const threw = await bundleAndRender(
+			fs,
+			bundle,
+			render,
+			"/src/bad-view.ts",
+			'throw new Error("boom from render");\nexport {};\n',
+		);
+		const reported =
+			!threw.ok && (threw.error?.message.includes("boom from render") ?? false);
+		checks.push({
+			section,
+			label: "reports a thrown error as a failed render",
+			status: reported ? "pass" : "fail",
+			detail: threw.error
+				? `${threw.error.name ?? "Error"}: ${threw.error.message}`
+				: `ok=${threw.ok}, no error captured`,
+		});
+	} catch (error) {
+		const { status, detail } = classifyError(error);
+		checks.push({ section, label: "iframe render", status, detail });
+	} finally {
+		iframe.remove();
+	}
+
+	return checks;
+}
+
+// ---------------------------------------------------------------------------
+// Section 5 — Install + integration (network: npm registry)
 // ---------------------------------------------------------------------------
 
 async function installSection(
@@ -424,6 +577,7 @@ async function main(): Promise<void> {
 		() => typecheckSection(fs),
 		() => bundleSection(fs, bundle),
 		() => runnerSection(fs, bundle),
+		() => renderSection(fs, bundle),
 		() => installSection(fs, bundle),
 	];
 
