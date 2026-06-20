@@ -137,6 +137,16 @@ interface HotUpdateReport {
 	outcome: "patched" | "reloaded" | "noop" | "error";
 	/** The module paths that were patched (present when `outcome` is `patched`). */
 	modules?: string[];
+	/**
+	 * How the live patch applied (present when `outcome` is `patched`):
+	 * - `boundary` — the accept-boundary walk re-ran only the modules that opted
+	 *   in via `import.meta.hot.accept()`; sibling component state was preserved.
+	 * - `rerun` — no module accepted the change, so the entry was re-run in place
+	 *   (in-app JS state reset; the realm, `window`, and CSS survived).
+	 */
+	mode?: "boundary" | "rerun";
+	/** The accept-boundary modules that re-ran (present when `mode` is `boundary`). */
+	boundaries?: string[];
 	error?: { message: string; name?: string };
 }
 
@@ -180,11 +190,13 @@ interface SandlotApi {
 	 * Apply source edits made since the last render/update to the live render
 	 * without a full document reload, preserving the iframe realm, `window`, and
 	 * CSS. Changed project modules are re-compiled and hot-swapped into the
-	 * runtime, which re-runs the entry (so in-app JS state resets — the
-	 * accept-boundary walk that preserves it is a later phase). Structural
-	 * changes (installs, manifest edits, deletions) and unresolvable patches fall
-	 * back to a fresh mount. Requires a prior `render(...)`. Returns
-	 * `{ ok, outcome, modules? }`.
+	 * runtime, which runs the accept-boundary walk: a module that opted in via
+	 * `import.meta.hot.accept()` re-runs only its own subgraph (`mode:
+	 * "boundary"`), preserving sibling component state; otherwise the entry is
+	 * re-run in place (`mode: "rerun"`, in-app state resets). Structural changes
+	 * (installs, manifest edits, deletions) and unresolvable patches fall back to
+	 * a fresh mount. Requires a prior `render(...)`. Returns
+	 * `{ ok, outcome, modules?, mode?, boundaries? }`.
 	 */
 	hotUpdate(): Promise<HotUpdateReport>;
 	/**
@@ -643,7 +655,13 @@ const sandlot: SandlotApi = {
 						: {}),
 				};
 			}
-			return { ok: true, outcome: "patched", modules: modules.map((m) => m.path) };
+			return {
+				ok: true,
+				outcome: "patched",
+				modules: modules.map((m) => m.path),
+				...(res.mode ? { mode: res.mode } : {}),
+				...(res.boundaries ? { boundaries: res.boundaries } : {}),
+			};
 		} catch (err) {
 			// Re-dirty so a later retry (after fixing the error) still patches.
 			for (const path of changed) dirtyModules.add(path);

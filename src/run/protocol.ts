@@ -163,25 +163,35 @@ export interface HmrPatchModule {
 /**
  * Host → Iframe (render): hot-patch changed modules into the live runtime.
  *
- * Each module's factory is re-registered by path; the runtime then re-runs the
- * graph from the entry (Phase 3 — no accept-boundary walk yet). Answered by an
+ * Each module's factory is re-registered by path; the runtime then runs the
+ * accept-boundary walk over the import graph (§9): it propagates the change up
+ * through importers until it reaches a module that opted in via
+ * `import.meta.hot.accept()`, re-instantiating only the affected subgraph and
+ * preserving sibling module/component state. If no accept boundary is reached
+ * (no module opted in), it falls back to a same-realm soft re-run of the entry
+ * (state resets, but the document/realm/CSS survive). Answered by an
  * {@link HmrResultMessage} correlated by `patchId`.
  */
 export interface HmrPatchMessage {
 	type: "hmr-patch";
 	/** Correlation id for the matching {@link HmrResultMessage}. */
 	patchId: number;
-	/** The changed module factories to re-register before re-running the entry. */
+	/** The changed module factories to re-register before walking the graph. */
 	modules: HmrPatchModule[];
 }
 
 /**
  * Iframe (render) → Host: the outcome of an {@link HmrPatchMessage}.
  *
- * `accepted` — the runtime re-registered and re-ran the entry in place (no
- * document reload). `full-reload` — applying the patch threw (e.g. a missing
- * module, a custom element that can't be redefined); the host should fall back
- * to a fresh render.
+ * `accepted` — the patch applied in place (no document reload). `full-reload` —
+ * applying the patch threw (e.g. a missing module, a custom element that can't
+ * be redefined); the host should fall back to a fresh render.
+ *
+ * When `accepted`, {@link mode} records which in-realm strategy ran:
+ * - `boundary` — the accept-boundary walk re-instantiated only the affected
+ *   subgraph; modules outside it (and their state) were untouched.
+ * - `rerun` — no module accepted the change, so the entry was re-run in place;
+ *   in-app JS state reset, but the iframe realm, `window`, and CSS survived.
  */
 export interface HmrResultMessage {
 	type: "hmr-result";
@@ -189,6 +199,10 @@ export interface HmrResultMessage {
 	patchId: number;
 	/** Whether the patch applied in place or the host must do a full reload. */
 	outcome: "accepted" | "full-reload";
+	/** Which in-realm strategy ran (present when `outcome` is `accepted`). */
+	mode?: "boundary" | "rerun";
+	/** Accept-boundary modules that re-ran (present when `mode` is `boundary`). */
+	boundaries?: string[];
 	/** Error info (present when `outcome` is `full-reload` due to a thrown error). */
 	error?: { message: string; name?: string; stack?: string };
 }

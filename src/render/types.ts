@@ -96,14 +96,24 @@ export interface EvaluateResult<T = unknown> {
 /**
  * Outcome of a {@link RenderHandle.applyPatch} call.
  *
- * `accepted` — the changed modules were re-registered and the entry re-ran in
- * place (the document, iframe realm, and CSS are preserved). `full-reload` —
- * applying the patch threw inside the iframe (e.g. a now-missing module, or a
- * custom element that can't be redefined); the caller should fall back to a
- * fresh {@link RenderFn} mount.
+ * `accepted` — the patch applied inside the live iframe (the document, realm,
+ * and CSS are preserved). `full-reload` — applying the patch threw (e.g. a
+ * now-missing module, or a custom element that can't be redefined); the caller
+ * should fall back to a fresh {@link RenderFn} mount.
+ *
+ * When `accepted`, `mode` distinguishes the two in-realm strategies:
+ * - `boundary` — the accept-boundary walk re-instantiated only the affected
+ *   subgraph (modules that opted in via `import.meta.hot.accept()`), so sibling
+ *   module/component state was preserved.
+ * - `rerun` — no module accepted the change, so the entry was re-run in place;
+ *   in-app JS state reset, but the iframe realm, `window`, and CSS survived.
  */
 export interface PatchResult {
 	outcome: "accepted" | "full-reload";
+	/** Which in-realm strategy ran (present when `outcome` is `accepted`). */
+	mode?: "boundary" | "rerun";
+	/** Accept-boundary modules that re-ran (present when `mode` is `boundary`). */
+	boundaries?: string[];
 	/** The error that forced a full reload (present when `outcome` is `full-reload`). */
 	error?: RunError;
 }
@@ -155,11 +165,15 @@ export interface RenderHandle {
 	applyCss(css: string): void;
 	/**
 	 * Hot-patch changed modules into the live render: re-register each module's
-	 * factory by path and re-run the graph from the entry, without reloading the
-	 * document. Preserves the iframe realm, the `window`, and CSS, but (in this
-	 * phase, before the accept-boundary walk) re-runs the entry, so in-app JS
-	 * state resets. Resolves with a {@link PatchResult}; on `full-reload` the
-	 * caller should mount a fresh render. No-op (`full-reload`) after close.
+	 * factory by path, then run the accept-boundary walk over the import graph.
+	 * The change propagates up through importers until it reaches a module that
+	 * opted in via `import.meta.hot.accept()`, re-instantiating only the affected
+	 * subgraph and preserving sibling module/component state
+	 * (`PatchResult.mode === "boundary"`). If no module accepts, the entry is
+	 * re-run in place (`mode === "rerun"`): in-app JS state resets, but the
+	 * document, iframe realm, `window`, and CSS survive. Resolves with a
+	 * {@link PatchResult}; on `full-reload` (the patch threw) the caller should
+	 * mount a fresh render. No-op (`full-reload`) after close.
 	 */
 	applyPatch(modules: RenderModule[]): Promise<PatchResult>;
 	/** Tear down the render: close transport, resolve result. */

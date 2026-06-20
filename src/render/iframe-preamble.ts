@@ -222,8 +222,27 @@ const __globalNames = Object.keys(__globals);
 const __globalValues = Object.values(__globals);
 const __registry = new Map();
 const __cache = new Map();
+const __hot = new Map();
 let __vendor = {};
 let __entry = null;
+
+// Per-module hot context backing import.meta.hot. The persistent entry holds the
+// accept/dispose registrations of the *current* instance plus a data stash that
+// survives re-instantiation (dispose writes it, the next instance reads it).
+function __makeHot(key) {
+	let entry = __hot.get(key);
+	if (!entry) { entry = { data: {} }; __hot.set(key, entry); }
+	// Reset registrations: the (re-)running factory re-declares them, so a module
+	// that dropped its accept()/dispose() call stops being a boundary.
+	entry.accepted = false;
+	entry.acceptCb = null;
+	entry.onDispose = null;
+	return {
+		accept: function (cb) { entry.accepted = true; entry.acceptCb = typeof cb === "function" ? cb : null; },
+		dispose: function (cb) { entry.onDispose = typeof cb === "function" ? cb : null; },
+		get data() { return entry.data; },
+	};
+}
 
 function __requireSync(fromPath, spec) {
 	const reg = fromPath != null ? __registry.get(fromPath) : null;
@@ -249,6 +268,7 @@ function __instantiate(key) {
 		module,
 		module.exports,
 		function (s) { return __requireSync(key, s); },
+		__makeHot(key),
 		...__globalValues
 	);
 	return module;
@@ -260,8 +280,24 @@ function __registerModule(m) {
 	const body = m.async
 		? "return (async () => {\\n" + m.code + "\\n})();"
 		: m.code;
-	const factory = new Function("module", "exports", "require", ...__globalNames, body);
+	const factory = new Function("module", "exports", "require", "import_meta_hot", ...__globalNames, body);
 	__registry.set(m.path, { factory: factory, deps: m.deps || {}, async: !!m.async });
+}
+
+// Reverse the import graph (project edges only — deps never holds vendor
+// specifiers) so the accept walk can propagate a change up to its importers.
+function __buildImporters() {
+	const importers = new Map();
+	for (const entry of __registry) {
+		const path = entry[0], rec = entry[1];
+		for (const spec in rec.deps) {
+			const target = rec.deps[spec];
+			let set = importers.get(target);
+			if (!set) { set = new Set(); importers.set(target, set); }
+			set.add(path);
+		}
+	}
+	return importers;
 }
 
 async function __runEntry() {
@@ -279,18 +315,66 @@ async function __mount(payload) {
 	await __runEntry();
 }
 
-// Phase 3 HMR: re-register the changed factories, then re-run the whole graph
-// from the entry. There is no accept-boundary walk yet, so we clear the module
-// cache (every module re-instantiates with the new factories) and reset the
-// mount point for a clean re-render. The iframe realm, window, and CSS survive
-// — only in-app JS state resets. Throwing here (missing module, a custom element
-// that can't be redefined, …) bubbles up so the host can fall back to a reload.
-async function __applyPatch(modules) {
-	for (const m of modules) __registerModule(m);
+// Same-realm soft re-run: clear the module cache, reset the mount point, and
+// re-run the entry. In-app state resets, but the document/realm/window/CSS
+// survive. The fallback when no module accepted the change.
+async function __softRerun() {
 	__cache.clear();
 	const __root = document.getElementById("root");
 	if (__root) __root.innerHTML = "";
 	await __runEntry();
+}
+
+// Phase 4 accept-boundary walk: propagate each changed module up through its
+// importers until a module that called import.meta.hot.accept() is reached, and
+// re-instantiate only that affected subgraph (sibling module/component state is
+// preserved). If the walk reaches a root with no accept boundary, fall back to a
+// same-realm soft re-run. Returns { mode, boundaries }.
+async function __acceptWalk(changedPaths) {
+	const importers = __buildImporters();
+	const affected = new Set();
+	const boundaries = [];
+	const queue = changedPaths.slice();
+	const seen = new Set(changedPaths);
+	let needsRerun = false;
+	while (queue.length) {
+		const path = queue.shift();
+		affected.add(path);
+		const hot = __hot.get(path);
+		if (hot && hot.accepted) { boundaries.push(path); continue; }
+		const imps = importers.get(path);
+		if (!imps || imps.size === 0) { needsRerun = true; break; }
+		for (const imp of imps) if (!seen.has(imp)) { seen.add(imp); queue.push(imp); }
+	}
+	if (needsRerun) {
+		await __softRerun();
+		return { mode: "rerun", boundaries: [] };
+	}
+	// Capture state + invalidate every affected module before re-instantiating,
+	// so each boundary's re-run pulls fresh exports for the whole subgraph.
+	for (const path of affected) {
+		const hot = __hot.get(path);
+		if (hot && hot.onDispose) { try { hot.onDispose(hot.data); } catch (e) {} }
+		__cache.delete(path);
+	}
+	// Re-instantiate each boundary (which lazily re-requires its affected deps),
+	// then fire its accept callback with the fresh exports.
+	for (const path of boundaries) {
+		const module = __instantiate(path);
+		const rec = __registry.get(path);
+		if (rec && rec.ret && typeof rec.ret.then === "function") await rec.ret;
+		const hot = __hot.get(path);
+		if (hot && hot.acceptCb) { try { hot.acceptCb(module.exports); } catch (e) {} }
+	}
+	return { mode: "boundary", boundaries: boundaries };
+}
+
+// Re-register the changed factories, then run the accept-boundary walk. Throwing
+// here (missing module, a custom element that can't be redefined, …) bubbles up
+// so the host can fall back to a full reload.
+async function __applyPatch(modules) {
+	for (const m of modules) __registerModule(m);
+	return __acceptWalk(modules.map(function (m) { return m.path; }));
 }`;
 }
 
@@ -377,9 +461,11 @@ ${hostResponseHandler}
 		return;
 	}
 	if (msg.type === "hmr-patch") {
-		let outcome = "accepted", error;
+		let outcome = "accepted", mode, boundaries, error;
 		try {
-			await __applyPatch(msg.modules || []);
+			const __res = await __applyPatch(msg.modules || []);
+			mode = __res.mode;
+			boundaries = __res.boundaries;
 		} catch (err) {
 			outcome = "full-reload";
 			error = {
@@ -388,7 +474,7 @@ ${hostResponseHandler}
 				stack: err instanceof Error ? err.stack : undefined,
 			};
 		}
-		window.parent.postMessage({ type: "hmr-result", patchId: msg.patchId, outcome: outcome, error: error, __channelId: ${channelIdStr} }, "*");
+		window.parent.postMessage({ type: "hmr-result", patchId: msg.patchId, outcome: outcome, mode: mode, boundaries: boundaries, error: error, __channelId: ${channelIdStr} }, "*");
 		return;
 	}
 	if (msg.type === "callback-invoke") {

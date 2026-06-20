@@ -37,6 +37,16 @@ const VENDOR_ENTRY = "/__sandlot_vendor__.js";
 /** Extensions we compile into individual registry factories. */
 const COMPILABLE = /\.(tsx?|jsx?|mjs|cjs|json)$/;
 
+/**
+ * The runtime injects a per-module hot context as the `import_meta_hot` factory
+ * parameter. Mapping `import.meta.hot` to that identifier lets module source use
+ * the familiar `import.meta.hot.accept()` / `.dispose()` / `.data` API while the
+ * registry runtime owns the implementation (the accept-boundary walk, §9).
+ */
+const HOT_DEFINE: Record<string, string> = {
+	"import.meta.hot": "import_meta_hot",
+};
+
 export interface BuildRenderPayloadArgs {
 	/** esbuild API (native or wasm) — used for per-module transform + vendor bundle. */
 	esbuild: EsbuildAPI;
@@ -181,13 +191,14 @@ async function compileModule(
 	define: Record<string, string>,
 ): Promise<{ code: string; async: boolean }> {
 	const loader = loaderForPath(path);
+	const hotDefine = { ...define, ...HOT_DEFINE };
 	if (asyncEntry) {
 		const out = await esbuild.transform(source, {
 			loader,
 			format: "esm",
 			target,
 			jsx: "automatic",
-			define,
+			define: hotDefine,
 		});
 		return { code: stripExports(out.code), async: true };
 	}
@@ -196,7 +207,7 @@ async function compileModule(
 		format: "cjs",
 		target,
 		jsx: "automatic",
-		define,
+		define: hotDefine,
 	});
 	return { code: out.code, async: false };
 }

@@ -39,12 +39,32 @@ async function bundleAndBuildPayload(
 // Reference registry runtime — the Node mirror of the iframe preamble runtime.
 // ---------------------------------------------------------------------------
 
-interface Runtime {
-	start(): Promise<Record<string, unknown>>;
-	/** Mirror of the iframe `__applyPatch`: re-register + clear cache + re-run. */
-	applyPatch(modules: RenderModule[]): Promise<Record<string, unknown>>;
+/** Mirror of the iframe `__applyPatch` result. */
+interface PatchOutcome {
+	mode: "boundary" | "rerun";
+	boundaries: string[];
+	/** The entry module's exports after the patch settled. */
+	exports: Record<string, unknown>;
 }
 
+interface Runtime {
+	start(): Promise<Record<string, unknown>>;
+	/** Mirror of the iframe `__applyPatch` + accept-boundary walk. */
+	applyPatch(modules: RenderModule[]): Promise<PatchOutcome>;
+}
+
+interface HotEntry {
+	data: Record<string, unknown>;
+	accepted: boolean;
+	acceptCb: ((exports: unknown) => void) | null;
+	onDispose: ((data: Record<string, unknown>) => void) | null;
+}
+
+/**
+ * A faithful Node mirror of the iframe registry runtime, including the Phase 4
+ * accept-boundary walk. Lets us exercise `import.meta.hot.accept()`/`dispose`,
+ * sibling-state preservation, and the soft-rerun fallback without a DOM.
+ */
 function makeRuntime(
 	payload: RenderPayload,
 	globals: Record<string, unknown> = {},
@@ -68,6 +88,30 @@ function makeRuntime(
 	}
 	const registry = new Map<string, Record_>();
 	const cache = new Map<string, { exports: Record<string, unknown> }>();
+	const hot = new Map<string, HotEntry>();
+
+	function makeHot(key: string): unknown {
+		let entry = hot.get(key);
+		if (!entry) {
+			entry = { data: {}, accepted: false, acceptCb: null, onDispose: null };
+			hot.set(key, entry);
+		}
+		entry.accepted = false;
+		entry.acceptCb = null;
+		entry.onDispose = null;
+		return {
+			accept(cb?: (exports: unknown) => void) {
+				(entry as HotEntry).accepted = true;
+				(entry as HotEntry).acceptCb = typeof cb === "function" ? cb : null;
+			},
+			dispose(cb?: (data: Record<string, unknown>) => void) {
+				(entry as HotEntry).onDispose = typeof cb === "function" ? cb : null;
+			},
+			get data() {
+				return (entry as HotEntry).data;
+			},
+		};
+	}
 
 	function registerModule(m: RenderModule): void {
 		// Async modules (import-less entry mount code) may use top-level await, so
@@ -77,6 +121,7 @@ function makeRuntime(
 			"module",
 			"exports",
 			"require",
+			"import_meta_hot",
 			...gNames,
 			body,
 		) as Record_["factory"];
@@ -110,9 +155,26 @@ function makeRuntime(
 			module,
 			module.exports,
 			(s: string) => requireSync(key, s),
+			makeHot(key),
 			...gVals,
 		);
 		return module;
+	}
+
+	function buildImporters(): Map<string, Set<string>> {
+		const importers = new Map<string, Set<string>>();
+		for (const [path, rec] of registry) {
+			for (const spec in rec.deps) {
+				const target = rec.deps[spec] as string;
+				let set = importers.get(target);
+				if (!set) {
+					set = new Set();
+					importers.set(target, set);
+				}
+				set.add(path);
+			}
+		}
+		return importers;
 	}
 
 	async function runEntry(): Promise<Record<string, unknown>> {
@@ -124,12 +186,82 @@ function makeRuntime(
 		return module.exports;
 	}
 
+	async function softRerun(): Promise<Record<string, unknown>> {
+		cache.clear();
+		return runEntry();
+	}
+
+	async function acceptWalk(changedPaths: string[]): Promise<PatchOutcome> {
+		const importers = buildImporters();
+		const affected = new Set<string>();
+		const boundaries: string[] = [];
+		const queue = changedPaths.slice();
+		const seen = new Set(changedPaths);
+		let needsRerun = false;
+		while (queue.length) {
+			const path = queue.shift() as string;
+			affected.add(path);
+			const h = hot.get(path);
+			if (h?.accepted) {
+				boundaries.push(path);
+				continue;
+			}
+			const imps = importers.get(path);
+			if (!imps || imps.size === 0) {
+				needsRerun = true;
+				break;
+			}
+			for (const imp of imps)
+				if (!seen.has(imp)) {
+					seen.add(imp);
+					queue.push(imp);
+				}
+		}
+		if (needsRerun) {
+			const exports = await softRerun();
+			return { mode: "rerun", boundaries: [], exports };
+		}
+		for (const path of affected) {
+			const h = hot.get(path);
+			if (h?.onDispose) {
+				try {
+					h.onDispose(h.data);
+				} catch {
+					/* dispose errors don't abort the walk */
+				}
+			}
+			cache.delete(path);
+		}
+		for (const path of boundaries) {
+			const module = instantiate(path);
+			const rec = registry.get(path);
+			if (
+				rec?.ret &&
+				typeof (rec.ret as { then?: unknown }).then === "function"
+			) {
+				await rec.ret;
+			}
+			const h = hot.get(path);
+			if (h?.acceptCb) {
+				try {
+					h.acceptCb(module.exports);
+				} catch {
+					/* accept callback errors don't abort the walk */
+				}
+			}
+		}
+		return {
+			mode: "boundary",
+			boundaries,
+			exports: instantiate(payload.entry).exports,
+		};
+	}
+
 	return {
 		start: runEntry,
 		async applyPatch(modules: RenderModule[]) {
 			for (const m of modules) registerModule(m);
-			cache.clear();
-			return runEntry();
+			return acceptWalk(modules.map((m) => m.path));
 		},
 	};
 }
@@ -240,9 +372,138 @@ test("buildRenderPatch recompiles a changed leaf and the re-run reflects it", as
 		expect(patch.map((m) => m.path)).toEqual(["/src/greeting.ts"]);
 		expect(patch[0]?.async).toBe(false);
 
-		// Applying the patch + re-running the entry reflects the new source.
+		// No module accepts, so the changed leaf propagates up to the entry root
+		// and falls back to a soft re-run; the new source is reflected.
 		const after = await runtime.applyPatch(patch);
-		expect((after.main as () => string)()).toBe("Hi, world.");
+		expect(after.mode).toBe("rerun");
+		expect((after.exports.main as () => string)()).toBe("Hi, world.");
+	} finally {
+		await ws.cleanup();
+	}
+});
+
+test("accept boundary re-runs only its subgraph and preserves sibling state", async () => {
+	const ws = await createWorkspace("payload-accept");
+	try {
+		await ws.fs.mkdir("/src", { recursive: true });
+		// A singleton store whose instance must survive a boundary patch.
+		await ws.fs.writeFile(
+			"/src/store.ts",
+			"export const store = { value: 0 };\n",
+		);
+		// The entry self-accepts: each (re-)run bumps the shared store and stamps
+		// a label, so we can tell a state-preserving boundary re-run (store keeps
+		// accumulating) from a state-resetting soft re-run (store back to 0).
+		await ws.fs.writeFile(
+			"/src/index.ts",
+			'import { store } from "./store";\n' +
+				"store.value += 1;\n" +
+				"import.meta.hot.accept();\n" +
+				'export const label = "v1";\n' +
+				"export const total = () => store.value;\n",
+		);
+
+		const payload = await bundleAndBuildPayload(ws.fs, "/src/index.ts");
+		const index = payload.modules.find((m) => m.path === "/src/index.ts");
+		// The accept call survived compilation as `import_meta_hot.accept()`.
+		expect(index?.code).toContain("import_meta_hot.accept()");
+
+		const runtime = makeRuntime(payload);
+		const before = await runtime.start();
+		expect((before.total as () => number)()).toBe(1);
+		expect(before.label).toBe("v1");
+
+		// Edit only the entry's label, rebuild, patch.
+		await ws.fs.writeFile(
+			"/src/index.ts",
+			'import { store } from "./store";\n' +
+				"store.value += 1;\n" +
+				"import.meta.hot.accept();\n" +
+				'export const label = "v2";\n' +
+				"export const total = () => store.value;\n",
+		);
+		const bundle = await bundleWithEsbuild(esbuild, {
+			fs: ws.fs,
+			entryPoint: "/src/index.ts",
+			entryResolveDir: "/",
+			options: resolveBundleOptions(undefined, {
+				format: "esm",
+				platform: "browser",
+				target: "es2022",
+			}),
+		});
+		const patch = await buildRenderPatch({
+			esbuild,
+			fs: ws.fs,
+			entryPoint: "/src/index.ts",
+			bundle,
+			changedPaths: ["/src/index.ts"],
+			target: "es2022",
+		});
+
+		const after = await runtime.applyPatch(patch);
+		// The entry self-accepted, so the walk re-ran only it as a boundary.
+		expect(after.mode).toBe("boundary");
+		expect(after.boundaries).toEqual(["/src/index.ts"]);
+		expect(after.exports.label).toBe("v2");
+		// store (a sibling, unchanged) kept its instance: value went 1 → 2, not
+		// reset to 0 then back to 1 (which is what a soft re-run would produce).
+		expect((after.exports.total as () => number)()).toBe(2);
+	} finally {
+		await ws.cleanup();
+	}
+});
+
+test("import.meta.hot.dispose stashes state that the re-run reads back", async () => {
+	const ws = await createWorkspace("payload-dispose");
+	try {
+		await ws.fs.mkdir("/src", { recursive: true });
+		// A trivial dep so the entry compiles as CJS (exports preserved) rather
+		// than the import-less async-ESM path (which strips exports).
+		await ws.fs.writeFile("/src/tag.ts", "export const tag = 'demo';\n");
+		// The module seeds its counter from hot.data (set by the previous
+		// instance's dispose), so a boundary patch carries the value forward even
+		// though the module itself holds the only copy of the state.
+		const source = (label: string) =>
+			'import { tag } from "./tag";\n' +
+			"const start = import.meta.hot.data.count || 0;\n" +
+			"let count = start + 1;\n" +
+			"import.meta.hot.dispose((data) => { data.count = count; });\n" +
+			"import.meta.hot.accept();\n" +
+			`export const label = ${JSON.stringify(label)} + tag;\n` +
+			"export const value = () => count;\n";
+		await ws.fs.writeFile("/src/index.ts", source("v1"));
+
+		const payload = await bundleAndBuildPayload(ws.fs, "/src/index.ts");
+		const runtime = makeRuntime(payload);
+		const before = await runtime.start();
+		expect((before.value as () => number)()).toBe(1);
+
+		await ws.fs.writeFile("/src/index.ts", source("v2"));
+		const bundle = await bundleWithEsbuild(esbuild, {
+			fs: ws.fs,
+			entryPoint: "/src/index.ts",
+			entryResolveDir: "/",
+			options: resolveBundleOptions(undefined, {
+				format: "esm",
+				platform: "browser",
+				target: "es2022",
+			}),
+		});
+		const patch = await buildRenderPatch({
+			esbuild,
+			fs: ws.fs,
+			entryPoint: "/src/index.ts",
+			bundle,
+			changedPaths: ["/src/index.ts"],
+			target: "es2022",
+		});
+
+		const after = await runtime.applyPatch(patch);
+		expect(after.mode).toBe("boundary");
+		expect(after.exports.label).toBe("v2demo");
+		// dispose stashed count=1; the new instance read it back and bumped to 2.
+		expect((after.exports.value as () => number)()).toBe(2);
 	} finally {
 		await ws.cleanup();
 	}

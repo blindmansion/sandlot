@@ -508,33 +508,58 @@ needed; reuse `createIframeTransport`.
 
 ## 9. Component 5 — accept-boundary walk
 
-Runs inside the iframe runtime when a patch arrives, using the `deps`/graph
-edges. esbuild's metafile only gives child edges (`imports`); build the reverse
-(importers) map either in the runtime as modules register, or ship it in the
-patch.
+> **Phase 4 status: ✅ Done.** Implemented as `__acceptWalk` in
+> `src/render/iframe-preamble.ts` (mirrored by the Node reference runtime in
+> `test/render-payload.test.ts`).
 
-Algorithm:
+Runs inside the iframe runtime when a patch arrives, using the `deps` edges
+captured at registration. esbuild's metafile only gives child edges
+(`imports`); the runtime builds the reverse (importers) map on demand from the
+registry (`__buildImporters`), so a changed module's import set is always fresh.
+
+`import.meta.hot` is backed by a per-module hot context the build maps to the
+`import_meta_hot` factory parameter (a `define` in `compileModule`,
+`src/render/payload.ts`). The runtime resets a module's accept/dispose
+registrations on every (re-)instantiation and keeps a persistent `data` stash
+that survives across instances (dispose writes it, the next instance reads it).
+
+Algorithm (self-accept model):
 
 ```
-applyAcceptWalk(changedPaths):
-  queue = changedPaths
-  seen = {}
-  for path in queue:
-    hot = __hot.get(path)
-    if hot && hot.onDispose: hot.onDispose(hot.data)   // capture state
-    delete __cache[path]                                // force re-instantiation
-    if hot && hot.accepted:
-      reinstantiate(path)                               // re-run factory + acceptCb
-      continue                                          // boundary stops here
-    importers = reverseGraph[path]
-    if importers is empty: return "full-reload"         // reached a root, nobody accepted
-    for imp in importers: if not seen[imp]: queue.push(imp); seen[imp]=true
-  return "accepted"
+acceptWalk(changedPaths):
+  importers = buildImporters()          // reverse graph from registry deps
+  affected = {}; boundaries = []; queue = changedPaths; seen = changedPaths
+  while queue:
+    path = queue.shift(); affected.add(path)
+    if hot[path].accepted: boundaries.push(path); continue   // boundary stops here
+    imps = importers[path]
+    if imps is empty: needsRerun = true; break               // reached a root, nobody accepted
+    for imp in imps: if not seen[imp]: queue.push(imp); seen.add(imp)
+  if needsRerun: softRerun(); return { mode: "rerun" }
+  for path in affected:                                       // capture + invalidate
+    if hot[path].onDispose: hot[path].onDispose(hot[path].data)
+    delete cache[path]
+  for path in boundaries:                                     // re-run only the subgraph
+    reinstantiate(path)                                       // lazily re-requires affected deps
+    if hot[path].acceptCb: hot[path].acceptCb(exports)
+  return { mode: "boundary", boundaries }
 ```
 
-If the walk returns `"full-reload"`, the host falls back to today's behavior:
-re-`render()` (replace `srcdoc`). The fallback is what makes the whole feature
-safe to ship incrementally — anything not yet hot-swappable simply reloads.
+The walk has **three tiers**, strictly additive over Phase 3:
+
+1. **`boundary`** — a module opted in via `import.meta.hot.accept()`. Only the
+   affected subgraph is disposed + re-instantiated; sibling modules keep their
+   live instances, so their state is preserved. This is the new Phase 4 win.
+2. **`rerun`** — no module accepted the change, so the change propagated to a
+   root. Fall back to a same-realm soft re-run (clear cache, reset `#root`,
+   re-run the entry): in-app JS state resets, but the document, iframe realm,
+   `window`, and CSS survive. This is exactly the Phase 3 behavior.
+3. **`full-reload`** — applying the patch *threw* (a now-missing module, a
+   custom element that can't be redefined). The error bubbles to the host
+   (`hmr-result` `outcome: "full-reload"`), which mounts a fresh render.
+
+So no-opt-in code is never worse off than Phase 3, and code that adds
+`import.meta.hot.accept()` graduates to true module-level state preservation.
 
 ---
 
@@ -623,7 +648,21 @@ correctness throughout.
    edit patched in place (export reflected, `window` state preserved); a manifest
    edit forced a full reload (new document); a syntax error returned `error` with
    the view untouched and re-patched cleanly once fixed.
-4. **Accept-boundary walk** (§9): real module-level swapping with root fallback.
+4. **Accept-boundary walk** (§9). ✅ **Done.** `import.meta.hot.accept()` /
+   `.dispose()` / `.data` are backed by a per-module hot context (the build maps
+   `import.meta.hot` → the `import_meta_hot` factory param via a `define` in
+   `compileModule`, `src/render/payload.ts`). On a patch, `__acceptWalk`
+   (`src/render/iframe-preamble.ts`) re-registers the changed factories, builds
+   the reverse import graph from the registry, and propagates each change up to
+   the nearest accepting module — re-instantiating only that subgraph so sibling
+   module/component state survives (`mode: "boundary"`). With no opt-in it falls
+   back to the Phase 3 same-realm soft re-run (`mode: "rerun"`); a thrown patch
+   still escalates to a host full-reload. The outcome (and which modules re-ran
+   as boundaries) is threaded through `HmrResultMessage` → `PatchResult` →
+   `sandlot.hotUpdate()`. Covered by `test/render-payload.test.ts` (a self-accept
+   boundary preserving a sibling singleton; `dispose`/`data` carrying state
+   forward; a no-accept leaf falling back to `rerun`) and the codegen assertions
+   in `test/render-preamble.test.ts`.
 5. **React refresh** (§11): state preservation for `react-app`.
 6. **Polish:** error overlay surfaced through the existing `log` channel,
    source-map fidelity, patch debounce tuning, and HMR latency measurement
@@ -697,8 +736,9 @@ correctness throughout.
   reflected and the document was not reloaded (e.g. a counter set via `evaluate`
   before the edit survives the document but resets on entry re-run — documents
   the Phase 3 limitation).
-- **Accept walk (Phase 4):** edit a module with an accepting parent; assert only
-  the boundary re-ran and unrelated state survived; edit a root with no accept,
-  assert full-reload fallback fired.
+- **Accept walk (Phase 4):** edit an accepting module; assert only its subgraph
+  re-ran (`mode: "boundary"`) and a sibling module's state survived; edit a
+  module no one accepts, assert the soft re-run fallback fired (`mode: "rerun"`).
+  Covered by `test/render-payload.test.ts`.
 - **React refresh (Phase 5):** edit a component body, assert `useState` value
   persists across the edit.

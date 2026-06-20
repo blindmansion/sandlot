@@ -97,7 +97,7 @@ test("preamble emits the css-update hot-swap branch", () => {
 test("preamble emits the hmr-patch branch and re-run helpers", () => {
 	const src = generateIframePreamble([], CHANNEL);
 
-	// Phase 3 JS patch: re-register changed factories, then re-run the entry.
+	// JS patch: re-register changed factories, then walk the import graph.
 	expect(src).toContain("function __registerModule(m)");
 	expect(src).toContain("async function __runEntry()");
 	expect(src).toContain("async function __applyPatch(modules)");
@@ -106,8 +106,25 @@ test("preamble emits the hmr-patch branch and re-run helpers", () => {
 	// Reports the outcome the host correlates by patchId.
 	expect(src).toContain('type: "hmr-result"');
 	expect(src).toContain('outcome = "full-reload"');
-	// The cache is cleared and the mount point reset for a clean re-run.
+	// The soft-rerun fallback clears the cache and resets the mount point.
+	expect(src).toContain("async function __softRerun()");
 	expect(src).toContain("__cache.clear();");
+});
+
+test("preamble emits the Phase 4 accept-boundary walk", () => {
+	const src = generateIframePreamble([], CHANNEL);
+
+	// import.meta.hot is backed by a per-module hot context passed to factories.
+	expect(src).toContain("function __makeHot(key)");
+	expect(src).toContain('"module", "exports", "require", "import_meta_hot"');
+	// The reverse import graph + the accept walk drive boundary re-instantiation.
+	expect(src).toContain("function __buildImporters()");
+	expect(src).toContain("async function __acceptWalk(changedPaths)");
+	// The two in-realm outcomes the walk can report.
+	expect(src).toContain('return { mode: "rerun", boundaries: [] };');
+	expect(src).toContain('return { mode: "boundary", boundaries: boundaries };');
+	// hmr-result carries the strategy + which modules re-ran as boundaries.
+	expect(src).toContain("mode: mode, boundaries: boundaries");
 });
 
 test("the legacy blob runtime is gone", () => {

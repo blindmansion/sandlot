@@ -169,6 +169,8 @@ export function createIframeRenderFn(
 						type: "hmr-result";
 						patchId: number;
 						outcome: "accepted" | "full-reload";
+						mode?: "boundary" | "rerun";
+						boundaries?: string[];
 						error?: RunError;
 				  };
 
@@ -239,6 +241,8 @@ export function createIframeRenderFn(
 						pendingPatches.delete(msg.patchId);
 						resolve({
 							outcome: msg.outcome,
+							...(msg.mode ? { mode: msg.mode } : {}),
+							...(msg.boundaries ? { boundaries: msg.boundaries } : {}),
 							...(msg.error ? { error: msg.error } : {}),
 						});
 					}
