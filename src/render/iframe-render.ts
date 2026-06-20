@@ -36,8 +36,10 @@ import { generateIframePreamble } from "./iframe-preamble";
 import { createIframeTransport } from "./iframe-transport";
 import type {
 	EvaluateResult,
+	PatchResult,
 	RenderFn,
 	RenderHandle,
+	RenderModule,
 	RenderResult,
 } from "./types";
 
@@ -134,6 +136,9 @@ export function createIframeRenderFn(
 		let closed = false;
 		let nextEvalId = 0;
 		const pendingEvals = new Map<number, (r: EvaluateResult) => void>();
+		// HMR patch request/response correlation state.
+		let nextPatchId = 0;
+		const pendingPatches = new Map<number, (r: PatchResult) => void>();
 
 		// The preamble's "ready" message gates evaluation: a call issued before
 		// the iframe handler is installed waits here instead of being dropped.
@@ -159,7 +164,13 @@ export function createIframeRenderFn(
 				| HostCallMessage
 				| ConsoleMessage
 				| DoneMessage
-				| EvalResultMessage;
+				| EvalResultMessage
+				| {
+						type: "hmr-result";
+						patchId: number;
+						outcome: "accepted" | "full-reload";
+						error?: RunError;
+				  };
 
 			switch (msg.type) {
 				case "ready":
@@ -221,6 +232,18 @@ export function createIframeRenderFn(
 					}
 					break;
 				}
+
+				case "hmr-result": {
+					const resolve = pendingPatches.get(msg.patchId);
+					if (resolve) {
+						pendingPatches.delete(msg.patchId);
+						resolve({
+							outcome: msg.outcome,
+							...(msg.error ? { error: msg.error } : {}),
+						});
+					}
+					break;
+				}
 			}
 		});
 
@@ -277,15 +300,33 @@ export function createIframeRenderFn(
 			if (closed) return;
 			transport.send({ type: "css-update", css });
 		},
+		async applyPatch(modules: RenderModule[]): Promise<PatchResult> {
+			await readyPromise;
+			if (closed) {
+				return {
+					outcome: "full-reload",
+					error: { message: "Render closed" },
+				};
+			}
+			const patchId = nextPatchId++;
+			return new Promise<PatchResult>((resolve) => {
+				pendingPatches.set(patchId, resolve);
+				transport.send({ type: "hmr-patch", patchId, modules });
+			});
+		},
 		close() {
 				closed = true;
 				transport.close();
 				complete();
-				for (const resolve of pendingEvals.values()) {
-					resolve({ ok: false, error: { message: "Render closed" } });
-				}
-				pendingEvals.clear();
-				activeHandle = null;
+			for (const resolve of pendingEvals.values()) {
+				resolve({ ok: false, error: { message: "Render closed" } });
+			}
+			pendingEvals.clear();
+			for (const resolve of pendingPatches.values()) {
+				resolve({ outcome: "full-reload", error: { message: "Render closed" } });
+			}
+			pendingPatches.clear();
+			activeHandle = null;
 			},
 		};
 

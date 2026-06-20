@@ -154,6 +154,54 @@ async function buildVendorBlob(
 }
 
 /**
+ * Whether a project module compiles as an async-ESM body rather than CJS.
+ *
+ * The async/ESM path strips exports, so it is only safe for the entry, whose
+ * exports the runtime discards. A non-entry import-less module (e.g. a leaf that
+ * only exports helpers) must stay CJS so its exports survive. "Import-less" (no
+ * graph edges) also guarantees no JSX runtime import was injected, so the
+ * stripped output is self-contained and may use top-level `await` (mount code
+ * relies on this).
+ */
+function isAsyncEntry(
+	path: string,
+	entry: string,
+	graph: BundleGraph,
+): boolean {
+	return path === entry && (graph[path]?.imports.length ?? 0) === 0;
+}
+
+/** Compile one project module to a registry factory body (CJS, or async-ESM). */
+async function compileModule(
+	esbuild: EsbuildAPI,
+	source: string,
+	path: string,
+	asyncEntry: boolean,
+	target: string,
+	define: Record<string, string>,
+): Promise<{ code: string; async: boolean }> {
+	const loader = loaderForPath(path);
+	if (asyncEntry) {
+		const out = await esbuild.transform(source, {
+			loader,
+			format: "esm",
+			target,
+			jsx: "automatic",
+			define,
+		});
+		return { code: stripExports(out.code), async: true };
+	}
+	const out = await esbuild.transform(source, {
+		loader,
+		format: "cjs",
+		target,
+		jsx: "automatic",
+		define,
+	});
+	return { code: out.code, async: false };
+}
+
+/**
  * Build a {@link RenderPayload} from a project's bundle result: a vendor blob,
  * one factory per project module, and the absolute entry key.
  */
@@ -180,37 +228,16 @@ export async function buildRenderPayload(
 	const modules: RenderModule[] = [];
 	for (const path of projectPaths) {
 		const source = await fs.readFile(path);
-		const loader = loaderForPath(path);
 		const deps = projectDepsFor(path, bundle.graph, projectPaths);
-		// The async/ESM path strips exports, so it is only safe for the entry,
-		// whose exports the runtime discards. A non-entry import-less module (e.g.
-		// a leaf that only exports helpers) must stay CJS so its exports survive.
-		// "Import-less" (no graph edges) also guarantees no JSX runtime import was
-		// injected, so the stripped output is self-contained.
-		const asyncEntry =
-			path === entry && (bundle.graph[path]?.imports.length ?? 0) === 0;
-
-		if (asyncEntry) {
-			// No imports → safe to compile as ESM and run as an async body, which
-			// preserves top-level `await` for mount code.
-			const out = await esbuild.transform(source, {
-				loader,
-				format: "esm",
-				target,
-				jsx: "automatic",
-				define,
-			});
-			modules.push({ path, code: stripExports(out.code), deps, async: true });
-		} else {
-			const out = await esbuild.transform(source, {
-				loader,
-				format: "cjs",
-				target,
-				jsx: "automatic",
-				define,
-			});
-			modules.push({ path, code: out.code, deps, async: false });
-		}
+		const { code, async } = await compileModule(
+			esbuild,
+			source,
+			path,
+			isAsyncEntry(path, entry, bundle.graph),
+			target,
+			define,
+		);
+		modules.push({ path, code, deps, async });
 	}
 
 	const vendorSpecifiers = collectVendorSpecifiers(bundle.graph, projectPaths);
@@ -228,4 +255,76 @@ export async function buildRenderPayload(
 		vendor,
 		...(bundle.css ? { css: bundle.css } : {}),
 	};
+}
+
+export interface BuildRenderPatchArgs {
+	/** esbuild API (native or wasm) — used for per-module transform. */
+	esbuild: EsbuildAPI;
+	/** Filesystem the project lives in. */
+	fs: BundleFileSystem;
+	/** Entry point (absolute, or relative to `entryResolveDir`). */
+	entryPoint: string;
+	/** Directory a relative `entryPoint` resolves against. Defaults to `/`. */
+	entryResolveDir?: string;
+	/**
+	 * A *fresh* bundle result (rebuild after the edits) — its {@link BundleGraph}
+	 * supplies the changed modules' current dependency edges and validates that
+	 * the project still resolves.
+	 */
+	bundle: BundleResult;
+	/** The set of changed VFS paths to compile into swap factories. */
+	changedPaths: string[];
+	/** esbuild target for per-module transforms. */
+	target?: string;
+	/** esbuild `define` map applied to each per-module transform. */
+	define?: Record<string, string>;
+}
+
+/**
+ * Compile a set of changed project modules into swappable registry factories
+ * (the {@link RenderModule} shape the runtime re-registers on `hmr-patch`).
+ *
+ * Only changed paths that are project modules present in the fresh graph are
+ * compiled; anything else (a dependency, a deleted/unreachable file, a non-source
+ * asset) is skipped — the caller decides whether the resulting patch set is
+ * applicable or whether to fall back to a full reload. Dependency edges come
+ * from the fresh graph, so a module that added/removed a project import carries
+ * the updated `deps` map.
+ */
+export async function buildRenderPatch(
+	args: BuildRenderPatchArgs,
+): Promise<RenderModule[]> {
+	const {
+		esbuild,
+		fs,
+		bundle,
+		entryResolveDir = "/",
+		target = "es2022",
+		define = {},
+	} = args;
+
+	const entry = isAbsolute(args.entryPoint)
+		? args.entryPoint
+		: resolve(entryResolveDir, args.entryPoint);
+
+	const projectPaths = new Set(
+		Object.keys(bundle.graph).filter(isProjectModule),
+	);
+
+	const modules: RenderModule[] = [];
+	for (const path of args.changedPaths) {
+		if (!projectPaths.has(path)) continue;
+		const source = await fs.readFile(path);
+		const deps = projectDepsFor(path, bundle.graph, projectPaths);
+		const { code, async } = await compileModule(
+			esbuild,
+			source,
+			path,
+			isAsyncEntry(path, entry, bundle.graph),
+			target,
+			define,
+		);
+		modules.push({ path, code, deps, async });
+	}
+	return modules;
 }

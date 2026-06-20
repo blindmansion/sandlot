@@ -223,6 +223,7 @@ const __globalValues = Object.values(__globals);
 const __registry = new Map();
 const __cache = new Map();
 let __vendor = {};
+let __entry = null;
 
 function __requireSync(fromPath, spec) {
 	const reg = fromPath != null ? __registry.get(fromPath) : null;
@@ -253,22 +254,43 @@ function __instantiate(key) {
 	return module;
 }
 
+function __registerModule(m) {
+	// Async modules (import-less entry mount code) may use top-level await, so
+	// the body runs inside an async IIFE whose promise the entry mount awaits.
+	const body = m.async
+		? "return (async () => {\\n" + m.code + "\\n})();"
+		: m.code;
+	const factory = new Function("module", "exports", "require", ...__globalNames, body);
+	__registry.set(m.path, { factory: factory, deps: m.deps || {}, async: !!m.async });
+}
+
+async function __runEntry() {
+	__instantiate(__entry);
+	const rec = __registry.get(__entry);
+	if (rec && rec.ret && typeof rec.ret.then === "function") await rec.ret;
+}
+
 async function __mount(payload) {
 	const __vmod = { exports: {} };
 	(new Function("module", "exports", payload.vendor))(__vmod, __vmod.exports);
 	__vendor = __vmod.exports || {};
-	for (const m of payload.modules) {
-		// Async modules (import-less entry mount code) may use top-level await, so
-		// the body runs inside an async IIFE whose promise the entry mount awaits.
-		const body = m.async
-			? "return (async () => {\\n" + m.code + "\\n})();"
-			: m.code;
-		const factory = new Function("module", "exports", "require", ...__globalNames, body);
-		__registry.set(m.path, { factory: factory, deps: m.deps || {}, async: !!m.async });
-	}
-	__instantiate(payload.entry);
-	const rec = __registry.get(payload.entry);
-	if (rec && rec.ret && typeof rec.ret.then === "function") await rec.ret;
+	__entry = payload.entry;
+	for (const m of payload.modules) __registerModule(m);
+	await __runEntry();
+}
+
+// Phase 3 HMR: re-register the changed factories, then re-run the whole graph
+// from the entry. There is no accept-boundary walk yet, so we clear the module
+// cache (every module re-instantiates with the new factories) and reset the
+// mount point for a clean re-render. The iframe realm, window, and CSS survive
+// — only in-app JS state resets. Throwing here (missing module, a custom element
+// that can't be redefined, …) bubbles up so the host can fall back to a reload.
+async function __applyPatch(modules) {
+	for (const m of modules) __registerModule(m);
+	__cache.clear();
+	const __root = document.getElementById("root");
+	if (__root) __root.innerHTML = "";
+	await __runEntry();
 }`;
 }
 
@@ -352,6 +374,21 @@ ${hostResponseHandler}
 		// Hot-swap CSS in place: replace the <style> text, no JS re-execution.
 		const __cssEl = document.getElementById("__sandlot_css");
 		if (__cssEl) __cssEl.textContent = msg.css;
+		return;
+	}
+	if (msg.type === "hmr-patch") {
+		let outcome = "accepted", error;
+		try {
+			await __applyPatch(msg.modules || []);
+		} catch (err) {
+			outcome = "full-reload";
+			error = {
+				message: err instanceof Error ? err.message : String(err),
+				name: err instanceof Error ? err.name : "Error",
+				stack: err instanceof Error ? err.stack : undefined,
+			};
+		}
+		window.parent.postMessage({ type: "hmr-result", patchId: msg.patchId, outcome: outcome, error: error, __channelId: ${channelIdStr} }, "*");
 		return;
 	}
 	if (msg.type === "callback-invoke") {

@@ -47,7 +47,11 @@ import {
 	summarizeDiagnostics,
 } from "../../src/toolchain/typecheck";
 import type { Diagnostic } from "../../src/toolchain/typecheck";
-import { buildRenderPayload, createIframeRenderFn } from "../../src/render";
+import {
+	buildRenderPatch,
+	buildRenderPayload,
+	createIframeRenderFn,
+} from "../../src/render";
 import type { EvalHandleToken, RenderHandle } from "../../src/render";
 import { createIframeWorkerRunFn } from "../../src/runtimes/iframe-worker-run";
 import { MemoryUnionFs } from "../helpers/memory-fs";
@@ -122,6 +126,20 @@ interface CssUpdateReport {
 	error?: { message: string; name?: string };
 }
 
+interface HotUpdateReport {
+	ok: boolean;
+	/**
+	 * - `patched`  — changed modules were hot-swapped into the live render.
+	 * - `reloaded` — a structural change (or a failed patch) forced a fresh mount.
+	 * - `noop`     — nothing dirty since the last render/update.
+	 * - `error`    — the rebuild failed (e.g. a syntax error in an edited file).
+	 */
+	outcome: "patched" | "reloaded" | "noop" | "error";
+	/** The module paths that were patched (present when `outcome` is `patched`). */
+	modules?: string[];
+	error?: { message: string; name?: string };
+}
+
 interface SandlotFs {
 	read(path: string): Promise<string>;
 	write(path: string, content: string): Promise<void>;
@@ -158,6 +176,17 @@ interface SandlotApi {
 	 * override for subsequent calls. Returns `{ ok, css? }`.
 	 */
 	updateCss(css?: string): Promise<CssUpdateReport>;
+	/**
+	 * Apply source edits made since the last render/update to the live render
+	 * without a full document reload, preserving the iframe realm, `window`, and
+	 * CSS. Changed project modules are re-compiled and hot-swapped into the
+	 * runtime, which re-runs the entry (so in-app JS state resets — the
+	 * accept-boundary walk that preserves it is a later phase). Structural
+	 * changes (installs, manifest edits, deletions) and unresolvable patches fall
+	 * back to a fresh mount. Requires a prior `render(...)`. Returns
+	 * `{ ok, outcome, modules? }`.
+	 */
+	hotUpdate(): Promise<HotUpdateReport>;
 	/**
 	 * Run JavaScript inside the currently-rendered iframe and return its value.
 	 *
@@ -303,6 +332,52 @@ let currentRenderHandle: RenderHandle | null = null;
 let currentRenderEntry: string | null = null;
 let currentRenderCssOverride: string | undefined;
 
+// HMR change tracking. `fs.write` diffs content against the last-seen hash so a
+// no-op rewrite doesn't mark a module dirty (the bundle session re-reads every
+// file each rebuild, so we can't derive "what changed" from esbuild — §7 of the
+// HMR plan). Structural changes (node_modules, manifests, deletions) can shift
+// resolution/the graph, so they escalate to a full reload instead of a patch.
+const moduleHashes = new Map<string, string>();
+const dirtyModules = new Set<string>();
+let pendingStructuralReload = false;
+
+// Project source files we compile into swappable registry factories.
+const PROJECT_SOURCE = /\.(tsx?|jsx?|mjs|cjs|json)$/;
+
+/** A change that can shift bare-import resolution or the module graph. */
+function isStructuralPath(path: string): boolean {
+	return path.includes("/node_modules/") || /(^|\/)package\.json$/.test(path);
+}
+
+/** Tiny non-cryptographic content hash (djb2) for cheap change detection. */
+function hashContent(content: string): string {
+	let h = 5381;
+	for (let i = 0; i < content.length; i++) {
+		h = (h * 33) ^ content.charCodeAt(i);
+	}
+	return (h >>> 0).toString(36);
+}
+
+/** Record a write for the next `hotUpdate()`: dirty a source module or escalate. */
+function trackWrite(path: string, content: string): void {
+	if (isStructuralPath(path)) {
+		pendingStructuralReload = true;
+		return;
+	}
+	if (!PROJECT_SOURCE.test(path)) return;
+	const next = hashContent(content);
+	if (moduleHashes.get(path) !== next) {
+		moduleHashes.set(path, next);
+		dirtyModules.add(path);
+	}
+}
+
+/** Clear pending change state — called after a (re)mount captures the latest. */
+function clearDirtyState(): void {
+	dirtyModules.clear();
+	pendingStructuralReload = false;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -357,6 +432,45 @@ async function runEvaluate(
 	};
 }
 
+/**
+ * Bundle the entry, build the registry payload, and mount it into the visible
+ * iframe — the single mount path shared by `render()` and the `hotUpdate()`
+ * full-reload fallback. Records the active render's entry + CSS override and
+ * clears pending dirty state (the fresh mount reflects the latest sources).
+ */
+async function mountActiveRender(
+	entryPoint: string,
+	cssOverride: string | undefined,
+): Promise<RenderHandle> {
+	const session = await getBundleSession(entryPoint, RENDER_BUNDLE_OPTIONS);
+	const bundle = await session.rebuild();
+	const payload = await buildRenderPayload({
+		esbuild,
+		fs,
+		entryPoint,
+		entryResolveDir: "/",
+		bundle,
+		target: "es2022",
+	});
+	if (cssOverride !== undefined) payload.css = cssOverride;
+	const handle = renderFn({ payload, hostFunctions: sandHostFunctions });
+	currentRenderHandle = handle;
+	currentRenderEntry = entryPoint;
+	currentRenderCssOverride = cssOverride;
+	clearDirtyState();
+	return handle;
+}
+
+/** Re-mount the active render from scratch (the full-reload HMR fallback). */
+async function remountActiveRender(): Promise<void> {
+	if (!currentRenderEntry) return;
+	const handle = await mountActiveRender(
+		currentRenderEntry,
+		currentRenderCssOverride,
+	);
+	await handle.result;
+}
+
 // ---------------------------------------------------------------------------
 // Facade
 // ---------------------------------------------------------------------------
@@ -369,6 +483,7 @@ const sandlotFs: SandlotFs = {
 		await fs.writeFile(path, content);
 		await typecheckSession.changed(path);
 		notifyBundleSessions("changed", path);
+		trackWrite(path, content);
 	},
 	async exists(path) {
 		return fs.exists(path);
@@ -391,12 +506,17 @@ const sandlotFs: SandlotFs = {
 		await fs.rm(path, opts);
 		await typecheckSession.deleted(path);
 		notifyBundleSessions("deleted", path);
+		// A deletion changes the module graph; escalate to a full reload.
+		moduleHashes.delete(path);
+		dirtyModules.delete(path);
+		pendingStructuralReload = true;
 	},
 	async seed(map) {
 		for (const [path, content] of Object.entries(map)) {
 			await fs.writeFile(path, content);
 			await typecheckSession.changed(path);
 			notifyBundleSessions("changed", path);
+			trackWrite(path, content);
 		}
 	},
 	async list() {
@@ -448,6 +568,8 @@ const sandlot: SandlotApi = {
 		// node_modules changed out from under the typecheck + bundle sessions.
 		typecheckSession.invalidate();
 		invalidateBundleSessions();
+		// Dependencies changed → the vendor blob is stale; force a full reload.
+		pendingStructuralReload = true;
 		return installed.map((r) => ({ name: r.name, version: r.version }));
 	},
 
@@ -463,30 +585,77 @@ const sandlot: SandlotApi = {
 	},
 
 	async render(entryPoint, options) {
-		const session = await getBundleSession(entryPoint, RENDER_BUNDLE_OPTIONS);
-		const bundle = await session.rebuild();
-		const payload = await buildRenderPayload({
-			esbuild,
-			fs,
-			entryPoint,
-			entryResolveDir: "/",
-			bundle,
-			target: "es2022",
-		});
-		if (options?.css !== undefined) payload.css = options.css;
-		const handle = renderFn({
-			payload,
-			hostFunctions: sandHostFunctions,
-		});
+		const handle = await mountActiveRender(entryPoint, options?.css);
 		// Intentionally leave the handle open so the rendered view stays visible
-		// in the iframe for screenshots and so `evaluate` can run against it.
-		// `createIframeRenderFn` tears down the previous render automatically on
-		// the next call.
-		currentRenderHandle = handle;
-		currentRenderEntry = entryPoint;
-		currentRenderCssOverride = options?.css;
+		// in the iframe for screenshots and so `evaluate`/`hotUpdate` can run
+		// against it. `createIframeRenderFn` tears down the previous render
+		// automatically on the next mount.
 		const result = await handle.result;
 		return toExecReport(result);
+	},
+
+	async hotUpdate() {
+		if (!currentRenderHandle || !currentRenderEntry) {
+			return {
+				ok: false,
+				outcome: "noop",
+				error: { message: "No active render. Call render(...) first." },
+			};
+		}
+		const entry = currentRenderEntry;
+		// Structural change (deps/manifest/deletion) → graph/resolution may have
+		// shifted; a fresh mount is the safe move.
+		if (pendingStructuralReload) {
+			await remountActiveRender();
+			return { ok: true, outcome: "reloaded" };
+		}
+		if (dirtyModules.size === 0) return { ok: true, outcome: "noop" };
+
+		const changed = [...dirtyModules];
+		dirtyModules.clear();
+		try {
+			const session = await getBundleSession(entry, RENDER_BUNDLE_OPTIONS);
+			// Rebuild validates the edits and gives the fresh dependency graph.
+			const bundle = await session.rebuild();
+			const modules = await buildRenderPatch({
+				esbuild,
+				fs,
+				entryPoint: entry,
+				entryResolveDir: "/",
+				bundle,
+				changedPaths: changed,
+				target: "es2022",
+			});
+			// Nothing compilable changed in the live graph (e.g. only an unreachable
+			// file) — fall back to a fresh mount to stay correct.
+			if (modules.length === 0) {
+				await remountActiveRender();
+				return { ok: true, outcome: "reloaded" };
+			}
+			const res = await currentRenderHandle.applyPatch(modules);
+			if (res.outcome === "full-reload") {
+				await remountActiveRender();
+				return {
+					ok: true,
+					outcome: "reloaded",
+					...(res.error
+						? { error: { message: res.error.message, name: res.error.name } }
+						: {}),
+				};
+			}
+			return { ok: true, outcome: "patched", modules: modules.map((m) => m.path) };
+		} catch (err) {
+			// Re-dirty so a later retry (after fixing the error) still patches.
+			for (const path of changed) dirtyModules.add(path);
+			return {
+				ok: false,
+				outcome: "error",
+				error: {
+					message: err instanceof Error ? err.message : String(err),
+					name: err instanceof Error ? err.name : "Error",
+				},
+			};
+		}
 	},
 
 	async updateCss(css) {
@@ -561,6 +730,9 @@ const sandlot: SandlotApi = {
 		// bound to now-deleted entry points) and reset the typecheck session.
 		await disposeBundleSessions();
 		typecheckSession.invalidate();
+		// Drop all HMR change tracking — the filesystem is gone.
+		moduleHashes.clear();
+		clearDirtyState();
 		// Tear down the current render for a true clean slate: close the handle
 		// (kills the transport and invalidates any outstanding evaluate handles)
 		// and blank the visible iframe so the old view doesn't linger.

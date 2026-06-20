@@ -93,6 +93,21 @@ export interface EvaluateResult<T = unknown> {
 	error?: RunError;
 }
 
+/**
+ * Outcome of a {@link RenderHandle.applyPatch} call.
+ *
+ * `accepted` — the changed modules were re-registered and the entry re-ran in
+ * place (the document, iframe realm, and CSS are preserved). `full-reload` —
+ * applying the patch threw inside the iframe (e.g. a now-missing module, or a
+ * custom element that can't be redefined); the caller should fall back to a
+ * fresh {@link RenderFn} mount.
+ */
+export interface PatchResult {
+	outcome: "accepted" | "full-reload";
+	/** The error that forced a full reload (present when `outcome` is `full-reload`). */
+	error?: RunError;
+}
+
 /** A handle to an active render session inside an iframe. */
 export interface RenderHandle {
 	/** Resolves when the rendered code finishes executing (or is closed). */
@@ -138,6 +153,15 @@ export interface RenderHandle {
 	 * cheapest hot update. Fire-and-forget; a no-op after the render is closed.
 	 */
 	applyCss(css: string): void;
+	/**
+	 * Hot-patch changed modules into the live render: re-register each module's
+	 * factory by path and re-run the graph from the entry, without reloading the
+	 * document. Preserves the iframe realm, the `window`, and CSS, but (in this
+	 * phase, before the accept-boundary walk) re-runs the entry, so in-app JS
+	 * state resets. Resolves with a {@link PatchResult}; on `full-reload` the
+	 * caller should mount a fresh render. No-op (`full-reload`) after close.
+	 */
+	applyPatch(modules: RenderModule[]): Promise<PatchResult>;
 	/** Tear down the render: close transport, resolve result. */
 	close(): void;
 }

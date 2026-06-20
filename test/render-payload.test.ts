@@ -12,8 +12,8 @@ import { expect, test } from "bun:test";
 import { bundleWithEsbuild, resolveBundleOptions } from "../src/toolchain/bundle/core";
 import { createNativeEsbuild } from "../src/toolchain/bundle/native";
 import type { BundleFileSystem } from "../src/toolchain/bundle/fs";
-import { buildRenderPayload } from "../src/render/payload";
-import type { RenderPayload } from "../src/render/types";
+import { buildRenderPatch, buildRenderPayload } from "../src/render/payload";
+import type { RenderModule, RenderPayload } from "../src/render/types";
 import { createWorkspace, loadFixture } from "./helpers";
 
 const esbuild = createNativeEsbuild();
@@ -41,6 +41,8 @@ async function bundleAndBuildPayload(
 
 interface Runtime {
 	start(): Promise<Record<string, unknown>>;
+	/** Mirror of the iframe `__applyPatch`: re-register + clear cache + re-run. */
+	applyPatch(modules: RenderModule[]): Promise<Record<string, unknown>>;
 }
 
 function makeRuntime(
@@ -67,7 +69,7 @@ function makeRuntime(
 	const registry = new Map<string, Record_>();
 	const cache = new Map<string, { exports: Record<string, unknown> }>();
 
-	for (const m of payload.modules) {
+	function registerModule(m: RenderModule): void {
 		// Async modules (import-less entry mount code) may use top-level await, so
 		// their body runs inside an async IIFE whose promise the runtime awaits.
 		const body = m.async ? `return (async () => {\n${m.code}\n})();` : m.code;
@@ -80,6 +82,8 @@ function makeRuntime(
 		) as Record_["factory"];
 		registry.set(m.path, { factory, deps: m.deps, async: m.async });
 	}
+
+	for (const m of payload.modules) registerModule(m);
 
 	function requireSync(fromPath: string | null, spec: string): unknown {
 		const reg = fromPath != null ? registry.get(fromPath) : null;
@@ -111,17 +115,21 @@ function makeRuntime(
 		return module;
 	}
 
+	async function runEntry(): Promise<Record<string, unknown>> {
+		const module = instantiate(payload.entry);
+		const rec = registry.get(payload.entry);
+		if (rec?.ret && typeof (rec.ret as { then?: unknown }).then === "function") {
+			await rec.ret;
+		}
+		return module.exports;
+	}
+
 	return {
-		async start() {
-			const module = instantiate(payload.entry);
-			const rec = registry.get(payload.entry);
-			if (
-				rec?.ret &&
-				typeof (rec.ret as { then?: unknown }).then === "function"
-			) {
-				await rec.ret;
-			}
-			return module.exports;
+		start: runEntry,
+		async applyPatch(modules: RenderModule[]) {
+			for (const m of modules) registerModule(m);
+			cache.clear();
+			return runEntry();
 		},
 	};
 }
@@ -189,6 +197,52 @@ test("dependency import resolves through the vendor blob", async () => {
 
 		const exports = await makeRuntime(payload).start();
 		expect(exports.v).toBe(" 2");
+	} finally {
+		await ws.cleanup();
+	}
+});
+
+test("buildRenderPatch recompiles a changed leaf and the re-run reflects it", async () => {
+	const ws = await loadFixture("basic");
+	try {
+		const payload = await bundleAndBuildPayload(ws.fs, "/src/index.ts");
+		const runtime = makeRuntime(payload);
+
+		// Initial mount reflects the original greeting.
+		const before = await runtime.start();
+		expect((before.main as () => string)()).toBe("Hello, world!");
+
+		// Edit a leaf module, rebuild, and build a patch for just that file.
+		await ws.fs.writeFile(
+			"/src/greeting.ts",
+			"export function greeting(name: string): string {\n\treturn `Hi, ${name}.`;\n}\n",
+		);
+		const bundle = await bundleWithEsbuild(esbuild, {
+			fs: ws.fs,
+			entryPoint: "/src/index.ts",
+			entryResolveDir: "/",
+			options: resolveBundleOptions(undefined, {
+				format: "esm",
+				platform: "browser",
+				target: "es2022",
+			}),
+		});
+		const patch = await buildRenderPatch({
+			esbuild,
+			fs: ws.fs,
+			entryPoint: "/src/index.ts",
+			bundle,
+			changedPaths: ["/src/greeting.ts"],
+			target: "es2022",
+		});
+
+		// Only the changed module is in the patch, with its deps preserved.
+		expect(patch.map((m) => m.path)).toEqual(["/src/greeting.ts"]);
+		expect(patch[0]?.async).toBe(false);
+
+		// Applying the patch + re-running the entry reflects the new source.
+		const after = await runtime.applyPatch(patch);
+		expect((after.main as () => string)()).toBe("Hi, world.");
 	} finally {
 		await ws.cleanup();
 	}

@@ -94,6 +94,22 @@ test("preamble emits the css-update hot-swap branch", () => {
 	expect(src).toContain("__cssEl.textContent = msg.css;");
 });
 
+test("preamble emits the hmr-patch branch and re-run helpers", () => {
+	const src = generateIframePreamble([], CHANNEL);
+
+	// Phase 3 JS patch: re-register changed factories, then re-run the entry.
+	expect(src).toContain("function __registerModule(m)");
+	expect(src).toContain("async function __runEntry()");
+	expect(src).toContain("async function __applyPatch(modules)");
+	expect(src).toContain('if (msg.type === "hmr-patch")');
+	expect(src).toContain("await __applyPatch(msg.modules || []);");
+	// Reports the outcome the host correlates by patchId.
+	expect(src).toContain('type: "hmr-result"');
+	expect(src).toContain('outcome = "full-reload"');
+	// The cache is cleared and the mount point reset for a clean re-run.
+	expect(src).toContain("__cache.clear();");
+});
+
 test("the legacy blob runtime is gone", () => {
 	const src = generateIframePreamble([], CHANNEL);
 

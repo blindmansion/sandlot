@@ -145,6 +145,55 @@ export interface CssUpdateMessage {
 }
 
 /**
+ * A single module to (re)register in the render runtime's registry. Mirrors the
+ * render-layer `RenderModule` shape, inlined here so the protocol stays
+ * independent of the render module (run must not depend on render).
+ */
+export interface HmrPatchModule {
+	/** Absolute VFS path — the registry key. */
+	path: string;
+	/** The compiled module body (esbuild `cjs`/`esm` transform output). */
+	code: string;
+	/** Written specifier → absolute registry key, for project (non-vendor) imports. */
+	deps: Record<string, string>;
+	/** True when the body is an async IIFE (import-less entry with top-level await). */
+	async: boolean;
+}
+
+/**
+ * Host → Iframe (render): hot-patch changed modules into the live runtime.
+ *
+ * Each module's factory is re-registered by path; the runtime then re-runs the
+ * graph from the entry (Phase 3 — no accept-boundary walk yet). Answered by an
+ * {@link HmrResultMessage} correlated by `patchId`.
+ */
+export interface HmrPatchMessage {
+	type: "hmr-patch";
+	/** Correlation id for the matching {@link HmrResultMessage}. */
+	patchId: number;
+	/** The changed module factories to re-register before re-running the entry. */
+	modules: HmrPatchModule[];
+}
+
+/**
+ * Iframe (render) → Host: the outcome of an {@link HmrPatchMessage}.
+ *
+ * `accepted` — the runtime re-registered and re-ran the entry in place (no
+ * document reload). `full-reload` — applying the patch threw (e.g. a missing
+ * module, a custom element that can't be redefined); the host should fall back
+ * to a fresh render.
+ */
+export interface HmrResultMessage {
+	type: "hmr-result";
+	/** The patchId from the corresponding {@link HmrPatchMessage}. */
+	patchId: number;
+	/** Whether the patch applied in place or the host must do a full reload. */
+	outcome: "accepted" | "full-reload";
+	/** Error info (present when `outcome` is `full-reload` due to a thrown error). */
+	error?: { message: string; name?: string; stack?: string };
+}
+
+/**
  * Worker → Orchestrator: a host function call from the guest code.
  */
 export interface HostCallMessage {

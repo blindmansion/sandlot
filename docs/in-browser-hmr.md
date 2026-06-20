@@ -609,9 +609,20 @@ correctness throughout.
    `RenderHandle.applyCss` swap the stable `<style>` block's text in place;
    `sandlot.updateCss(css?)` drives it from the facade. Zero JS/DOM state loss,
    verified in-browser.
-3. **JS patch + full-reload fallback** (§§6–9, minus accept logic): on any JS
-   change, re-register changed modules and **re-run the entry** (cheap, loses JS
-   state but not the document). This validates the patch pipeline end to end.
+3. **JS patch + full-reload fallback** (§§6–9, minus accept logic). ✅ **Done.**
+   On a JS change the dirty modules are recompiled (`buildRenderPatch`,
+   `src/render/payload.ts`) and sent as an `hmr-patch` message; the iframe
+   runtime re-registers the factories, clears the module cache, resets `#root`,
+   and **re-runs the entry** in place (`__applyPatch` in
+   `src/render/iframe-preamble.ts`). The document, iframe realm, `window`, and
+   CSS survive; in-app JS state resets (the accept walk that preserves it is
+   Phase 4). `RenderHandle.applyPatch` correlates an `hmr-result`
+   (`accepted`/`full-reload`); `sandlot.hotUpdate()` drives it, falling back to a
+   fresh mount on structural changes (installs, manifest edits, deletions), an
+   empty/unresolvable patch set, or any thrown patch. Verified in-browser: a leaf
+   edit patched in place (export reflected, `window` state preserved); a manifest
+   edit forced a full reload (new document); a syntax error returned `error` with
+   the view untouched and re-patched cleanly once fixed.
 4. **Accept-boundary walk** (§9): real module-level swapping with root fallback.
 5. **React refresh** (§11): state preservation for `react-app`.
 6. **Polish:** error overlay surfaced through the existing `log` channel,
