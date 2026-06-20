@@ -74,6 +74,25 @@ test("eval honors returnHandle and emits a handle-release branch", () => {
 	expect(src).toContain("__handles.delete(msg.handleId)");
 });
 
+test("preamble emits the module registry runtime and mount branch", () => {
+	const src = generateIframePreamble([], CHANNEL);
+
+	// Registry runtime replaces the old single-blob __execute.
+	expect(src).toContain("const __registry = new Map();");
+	expect(src).toContain("function __requireSync(fromPath, spec)");
+	expect(src).toContain("async function __mount(payload)");
+	expect(src).toContain('if (msg.type === "mount")');
+	expect(src).toContain("await __mount(msg.payload);");
+});
+
+test("the legacy blob runtime is gone", () => {
+	const src = generateIframePreamble([], CHANNEL);
+
+	// No single-blob execution path remains.
+	expect(src).not.toContain("__execute");
+	expect(src).not.toContain('msg.type === "exec"');
+});
+
 test("host function stubs are still generated alongside eval", () => {
 	const fns = [
 		defineHostFunction({

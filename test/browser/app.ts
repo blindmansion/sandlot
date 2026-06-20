@@ -11,7 +11,11 @@
  * gracefully to "skip" when offline, so the page still tells a useful story.
  */
 
-import { createBundleFn, createWasmEsbuild } from "../../src/toolchain/bundle";
+import {
+	createBundleFn,
+	createWasmEsbuild,
+	type EsbuildAPI,
+} from "../../src/toolchain/bundle";
 import { createSandHostFunctions } from "../../src/host-functions";
 import {
 	getProjectRoot,
@@ -19,7 +23,7 @@ import {
 	readDepsFromPackageJson,
 } from "../../src/toolchain/install";
 import { MemoryUnionFs } from "../helpers/memory-fs";
-import { createIframeRenderFn } from "../../src/render";
+import { buildRenderPayload, createIframeRenderFn } from "../../src/render";
 import { createIframeWorkerRunFn } from "../../src/runtimes/iframe-worker-run";
 import {
 	createTypecheckSession,
@@ -314,6 +318,7 @@ async function runnerSection(
 async function bundleAndRender(
 	fs: MemoryUnionFs,
 	bundle: ReturnType<typeof createBundleFn>,
+	esbuild: EsbuildAPI,
 	render: ReturnType<typeof createIframeRenderFn>,
 	path: string,
 	source: string,
@@ -323,15 +328,23 @@ async function bundleAndRender(
 	},
 ) {
 	await fs.writeFile(path, source);
-	const { code } = await bundle({
+	const result = await bundle({
 		fs,
 		entryPoint: path,
 		entryResolveDir: "/",
-		options: { format: "esm", platform: "neutral" },
+		options: { format: "esm", platform: "browser", target: "es2022" },
 	});
+	const payload = await buildRenderPayload({
+		esbuild,
+		fs,
+		entryPoint: path,
+		entryResolveDir: "/",
+		bundle: result,
+		target: "es2022",
+	});
+	if (options?.css !== undefined) payload.css = options.css;
 	const handle = render({
-		code,
-		css: options?.css,
+		payload,
 		hostFunctions: options?.hostFunctions,
 	});
 	try {
@@ -349,6 +362,7 @@ async function bundleAndRender(
 async function mountForEvaluate(
 	fs: MemoryUnionFs,
 	bundle: ReturnType<typeof createBundleFn>,
+	esbuild: EsbuildAPI,
 	render: ReturnType<typeof createIframeRenderFn>,
 	path: string,
 	source: string,
@@ -358,15 +372,23 @@ async function mountForEvaluate(
 	},
 ) {
 	await fs.writeFile(path, source);
-	const { code } = await bundle({
+	const result = await bundle({
 		fs,
 		entryPoint: path,
 		entryResolveDir: "/",
-		options: { format: "esm", platform: "neutral" },
+		options: { format: "esm", platform: "browser", target: "es2022" },
 	});
+	const payload = await buildRenderPayload({
+		esbuild,
+		fs,
+		entryPoint: path,
+		entryResolveDir: "/",
+		bundle: result,
+		target: "es2022",
+	});
+	if (options?.css !== undefined) payload.css = options.css;
 	const handle = render({
-		code,
-		css: options?.css,
+		payload,
 		hostFunctions: options?.hostFunctions,
 	});
 	await handle.result;
@@ -376,6 +398,7 @@ async function mountForEvaluate(
 async function renderSection(
 	fs: MemoryUnionFs,
 	bundle: ReturnType<typeof createBundleFn>,
+	esbuild: EsbuildAPI,
 ): Promise<Check[]> {
 	const section = "render";
 	const checks: Check[] = [];
@@ -391,6 +414,7 @@ async function renderSection(
 		const mounted = await bundleAndRender(
 			fs,
 			bundle,
+			esbuild,
 			render,
 			"/src/view.ts",
 			'const root = document.getElementById("root");\n' +
@@ -429,6 +453,7 @@ async function renderSection(
 		const hostRendered = await bundleAndRender(
 			fs,
 			bundle,
+			esbuild,
 			render,
 			"/src/host-view.ts",
 			'const text = await Sand.fs.readFile("/src/math.ts");\n' +
@@ -457,6 +482,7 @@ async function renderSection(
 		const threw = await bundleAndRender(
 			fs,
 			bundle,
+			esbuild,
 			render,
 			"/src/bad-view.ts",
 			'throw new Error("boom from render");\nexport {};\n',
@@ -478,6 +504,7 @@ async function renderSection(
 		const handle = await mountForEvaluate(
 			fs,
 			bundle,
+			esbuild,
 			render,
 			"/src/eval-view.ts",
 			'document.getElementById("root").textContent = "initial";\n' +
@@ -679,6 +706,7 @@ async function installSection(
  */
 async function liveDemoSection(
 	bundle: ReturnType<typeof createBundleFn>,
+	esbuild: EsbuildAPI,
 ): Promise<Check[]> {
 	const section = "demo";
 	const checks: Check[] = [];
@@ -736,7 +764,7 @@ async function liveDemoSection(
 		// path executes via `new Function`, and no JS engine parses the
 		// decorators proposal syntax natively yet — esnext would leave the `@`
 		// in place and throw "Invalid or unexpected token" at mount time.
-		const { code, css } = await bundle({
+		const bundled = await bundle({
 			fs,
 			entryPoint: "/src/index.ts",
 			entryResolveDir: "/",
@@ -745,13 +773,21 @@ async function liveDemoSection(
 		checks.push({
 			section,
 			label: "bundled the lit widget",
-			status: code.length > 0 ? "pass" : "fail",
-			detail: `${code.length} bytes`,
+			status: bundled.code.length > 0 ? "pass" : "fail",
+			detail: `${bundled.code.length} bytes`,
 		});
 
 		setStatus("Mounting…");
+		const payload = await buildRenderPayload({
+			esbuild,
+			fs,
+			entryPoint: "/src/index.ts",
+			entryResolveDir: "/",
+			bundle: bundled,
+			target: "es2022",
+		});
 		const render = createIframeRenderFn(frame);
-		const handle = render({ code, css });
+		const handle = render({ payload });
 		const result = await handle.result;
 		checks.push({
 			section,
@@ -849,9 +885,9 @@ async function main(): Promise<void> {
 		() => typecheckSection(fs),
 		() => bundleSection(fs, bundle),
 		() => runnerSection(fs, bundle),
-		() => renderSection(fs, bundle),
+		() => renderSection(fs, bundle, esbuild),
 		() => installSection(fs, bundle),
-		() => liveDemoSection(bundle),
+		() => liveDemoSection(bundle, esbuild),
 	];
 
 	render(checks, false);

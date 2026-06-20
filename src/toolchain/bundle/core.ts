@@ -240,6 +240,7 @@ export function extractResult(
 	}
 
 	const inputs = result.metafile ? Object.keys(result.metafile.inputs) : [];
+	const graph = buildGraph(result.metafile);
 	const nativeDependencies = buildNativeDependencySummary(
 		nativeTracker.getImports(),
 	);
@@ -251,8 +252,38 @@ export function extractResult(
 		cssMap,
 		warnings: result.warnings,
 		inputs,
+		graph,
 		nativeDependencies,
 	};
+}
+
+/**
+ * Strip esbuild's plugin namespace prefix (`fs:`) so paths are plain absolute
+ * VFS paths the render runtime and HMR layer can use as registry keys.
+ */
+function stripNamespace(path: string): string {
+	return path.startsWith("fs:") ? path.slice("fs:".length) : path;
+}
+
+/**
+ * Build the {@link BundleGraph} from esbuild's metafile: one entry per input,
+ * each carrying its outgoing import edges with both the written specifier
+ * (`original`) and the resolved absolute path, namespace-stripped.
+ */
+function buildGraph(
+	metafile: Awaited<ReturnType<EsbuildAPI["build"]>>["metafile"],
+): BundleResult["graph"] {
+	const graph: BundleResult["graph"] = {};
+	if (!metafile) return graph;
+	for (const [key, input] of Object.entries(metafile.inputs)) {
+		graph[stripNamespace(key)] = {
+			imports: input.imports.map((imp) => ({
+				path: stripNamespace(imp.path),
+				...(imp.original !== undefined ? { original: imp.original } : {}),
+			})),
+		};
+	}
+	return graph;
 }
 
 /**

@@ -16,11 +16,54 @@ export type { EvalHandleToken } from "../run/protocol";
 // Render args, result, handle
 // ---------------------------------------------------------------------------
 
-export interface RenderArgs {
-	/** The bundled JavaScript code to execute inside the iframe. */
+/**
+ * A single project module compiled into a registry factory.
+ *
+ * The render runtime registers each module by its absolute VFS {@link path} and
+ * instantiates it on demand via a CommonJS-style `require`. The factory's
+ * `require(spec)` resolves project specifiers through {@link deps} and bare
+ * specifiers through the vendor map.
+ */
+export interface RenderModule {
+	/** Absolute VFS path — the registry key (e.g. `/src/app-root.ts`). */
+	path: string;
+	/** The compiled module body (an esbuild `cjs`/`esm` transform result). */
 	code: string;
+	/**
+	 * Maps each written specifier that resolves to another *project* module to
+	 * that module's absolute registry key (e.g. `{ "./math": "/src/math.ts" }`).
+	 * Bare/vendor specifiers are intentionally absent.
+	 */
+	deps: Record<string, string>;
+	/**
+	 * True when the factory body is an async IIFE (import-less mount code that may
+	 * use top-level `await`); the runtime awaits it when it is the entry. False
+	 * for synchronous CommonJS modules.
+	 */
+	async: boolean;
+}
+
+/**
+ * Everything the render runtime needs to mount a project as a module registry:
+ * a vendor blob, per-module factories, and the entry key.
+ */
+export interface RenderPayload {
+	/** Absolute VFS path of the entry module to `require` after registration. */
+	entry: string;
+	/** Project modules, each addressable and (later) hot-swappable. */
+	modules: RenderModule[];
+	/**
+	 * CommonJS code that, when evaluated, yields a `{ [specifier]: exports }` map
+	 * of everything imported from `node_modules`. Bare `require`s resolve here.
+	 */
+	vendor: string;
 	/** Combined CSS to inject as a <style> block in the iframe document. */
 	css?: string;
+}
+
+export interface RenderArgs {
+	/** The registry payload to mount inside the iframe. */
+	payload: RenderPayload;
 	/** Host-provided functions to inject as globals in the execution context. */
 	hostFunctions?: HostFunction[];
 }

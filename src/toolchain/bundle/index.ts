@@ -17,6 +17,8 @@ export type {
 export type {
 	BundleArgs,
 	BundleFn,
+	BundleGraph,
+	BundleGraphEdge,
 	BundleOptions,
 	BundleResolutionPreset,
 	BundleResult,

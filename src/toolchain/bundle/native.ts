@@ -10,5 +10,6 @@ export function createNativeEsbuild(): EsbuildAPI {
 	return {
 		build: async (options) => (await load()).build(options),
 		context: async (options) => (await load()).context(options),
+		transform: async (input, options) => (await load()).transform(input, options),
 	};
 }

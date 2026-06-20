@@ -52,6 +52,7 @@ export function generateIframePreamble(
 		hasRpcStubs ? generatePromiseMap(channelIdStr) : null,
 		generateStubs(stubs, channelIdStr),
 		generateGlobalsRegistry(stubs),
+		generateRegistryRuntime(),
 		generateMessageHandler(hasRpcStubs, channelIdStr),
 	]
 		.filter(Boolean)
@@ -206,6 +207,71 @@ function generateGlobalsRegistry(stubs: StubDef[]): string {
 	return lines.join("\n");
 }
 
+/**
+ * The module-registry runtime: registers per-module factories, resolves
+ * `require` (project specifiers → registry, bare specifiers → vendor map), and
+ * mounts a {@link RenderPayload}. Replaces the old single-blob `__execute`.
+ *
+ * Mirrors the reference implementation exercised by `test/render-payload.test.ts`.
+ * Host-function globals (`Sand.*`, `console`, …) are injected into every module
+ * factory the same way the legacy runtime injected them into the blob.
+ */
+function generateRegistryRuntime(): string {
+	return `// --- Module registry runtime ---
+const __globalNames = Object.keys(__globals);
+const __globalValues = Object.values(__globals);
+const __registry = new Map();
+const __cache = new Map();
+let __vendor = {};
+
+function __requireSync(fromPath, spec) {
+	const reg = fromPath != null ? __registry.get(fromPath) : null;
+	let key = null;
+	if (reg && reg.deps[spec]) key = reg.deps[spec];
+	else if (__registry.has(spec)) key = spec;
+	if (key == null) {
+		if (Object.prototype.hasOwnProperty.call(__vendor, spec)) return __vendor[spec];
+		if (/\\.css$/.test(spec)) return {};
+		throw new Error("Cannot find module '" + spec + "' from '" + fromPath + "'");
+	}
+	return __instantiate(key).exports;
+}
+
+function __instantiate(key) {
+	const cached = __cache.get(key);
+	if (cached) return cached;
+	const rec = __registry.get(key);
+	if (!rec) throw new Error("Module not registered: " + key);
+	const module = { exports: {} };
+	__cache.set(key, module);
+	rec.ret = rec.factory(
+		module,
+		module.exports,
+		function (s) { return __requireSync(key, s); },
+		...__globalValues
+	);
+	return module;
+}
+
+async function __mount(payload) {
+	const __vmod = { exports: {} };
+	(new Function("module", "exports", payload.vendor))(__vmod, __vmod.exports);
+	__vendor = __vmod.exports || {};
+	for (const m of payload.modules) {
+		// Async modules (import-less entry mount code) may use top-level await, so
+		// the body runs inside an async IIFE whose promise the entry mount awaits.
+		const body = m.async
+			? "return (async () => {\\n" + m.code + "\\n})();"
+			: m.code;
+		const factory = new Function("module", "exports", "require", ...__globalNames, body);
+		__registry.set(m.path, { factory: factory, deps: m.deps || {}, async: !!m.async });
+	}
+	__instantiate(payload.entry);
+	const rec = __registry.get(payload.entry);
+	if (rec && rec.ret && typeof rec.ret.then === "function") await rec.ret;
+}`;
+}
+
 function generateMessageHandler(
 	hasRpcStubs: boolean,
 	channelIdStr: string,
@@ -230,21 +296,6 @@ function generateMessageHandler(
 	return `// Message handler
 function __stripExports(code) {
 	return code.replace(/\\bexport\\s*\\{[^}]*\\}\\s*;?/g, "");
-}
-
-async function __execute(code) {
-	const module = { exports: {} };
-	const paramNames = ["module", "exports"];
-	const paramValues = [module, module.exports];
-	for (const [name, value] of Object.entries(__globals)) {
-		paramNames.push(name);
-		paramValues.push(value);
-	}
-	const __fn = new Function(
-		...paramNames,
-		"return (async () => {\\n" + __stripExports(code) + "\\n})();"
-	);
-	await __fn(...paramValues);
 }
 
 async function __evaluate(code, args) {
@@ -306,10 +357,10 @@ ${hostResponseHandler}
 		__callbacks.delete(msg.callbackId);
 		return;
 	}
-	if (msg.type === "exec") {
+	if (msg.type === "mount") {
 		let error;
 		try {
-			await __execute(msg.code);
+			await __mount(msg.payload);
 		} catch (err) {
 			error = {
 				message: err instanceof Error ? err.message : String(err),

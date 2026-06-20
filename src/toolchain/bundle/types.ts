@@ -142,9 +142,30 @@ export interface BundleResult {
 	warnings: esbuild.Message[];
 	/** Files that were included in the bundle */
 	inputs: string[];
+	/**
+	 * Module import graph derived from esbuild's metafile, keyed by absolute VFS
+	 * path (esbuild's `fs:` namespace prefix stripped). For each input, `imports`
+	 * lists its outgoing edges: `original` is the specifier as written in source
+	 * (e.g. `"./math"`, `"react/jsx-runtime"`) and `path` is the resolved
+	 * absolute VFS path it points at. This is the foundation for the render
+	 * registry runtime (per-module `require` resolution) and the HMR
+	 * accept-boundary walk.
+	 */
+	graph: BundleGraph;
 	/** Node.js built-in modules required by this bundle */
 	nativeDependencies: NativeDependencySummary;
 }
+
+/** A single outgoing import edge in the {@link BundleGraph}. */
+export interface BundleGraphEdge {
+	/** The specifier as written in source, e.g. `"./math"` or `"lit/decorators.js"`. */
+	original?: string;
+	/** The resolved absolute VFS path the import points at, e.g. `/src/math.ts`. */
+	path: string;
+}
+
+/** Import graph keyed by absolute VFS path. See {@link BundleResult.graph}. */
+export type BundleGraph = Record<string, { imports: BundleGraphEdge[] }>;
 
 /**
  * The esbuild API interface that both native and wasm implementations provide.
@@ -160,6 +181,16 @@ export interface EsbuildAPI {
 	 * not work in the browser, but `rebuild()` does).
 	 */
 	context(options: esbuild.BuildOptions): Promise<esbuild.BuildContext>;
+	/**
+	 * Transform a single module's source — no bundling, no resolution. Used by
+	 * the render HMR pipeline to compile one project module to a swappable
+	 * registry factory (its imports stay as `require(...)` calls that the render
+	 * runtime resolves). Works with both native esbuild and esbuild-wasm.
+	 */
+	transform(
+		input: string,
+		options?: esbuild.TransformOptions,
+	): Promise<esbuild.TransformResult>;
 }
 
 export type BundleFn = (args: BundleArgs) => Promise<BundleResult>;

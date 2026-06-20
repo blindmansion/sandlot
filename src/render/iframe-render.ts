@@ -51,7 +51,9 @@ function makeChannelId(): string {
  * Build a complete HTML document string for injection via `srcdoc`.
  */
 function assembleHtml(preamble: string, css?: string): string {
-	const styleBlock = css ? `<style>${css}</style>` : "";
+	// Stable id so CSS can later be hot-swapped in place (replace textContent)
+	// without remounting the document.
+	const styleBlock = `<style id="__sandlot_css">${css ?? ""}</style>`;
 	return `<!doctype html>
 <html>
 <head><meta charset="utf-8">${styleBlock}</head>
@@ -111,7 +113,7 @@ export function createIframeRenderFn(
 
 		const registry = buildRegistry(allFns);
 		const preamble = generateIframePreamble(allFns, channelId);
-		const html = assembleHtml(preamble, args.css);
+		const html = assembleHtml(preamble, args.payload.css);
 
 		// Create the transport (starts listening for messages immediately)
 		const transport = createIframeTransport(iframe, channelId);
@@ -164,7 +166,7 @@ export function createIframeRenderFn(
 					readyResolve();
 					if (!execSent) {
 						execSent = true;
-						transport.send({ type: "exec", code: args.code });
+						transport.send({ type: "mount", payload: args.payload });
 					}
 					break;
 

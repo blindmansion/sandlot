@@ -35,5 +35,9 @@ export function createWasmEsbuild(options: InitializeOptions): EsbuildAPI {
 			const es = await ensureInitialized();
 			return es.context(buildOptions);
 		},
+		async transform(input, transformOptions) {
+			const es = await ensureInitialized();
+			return es.transform(input, transformOptions);
+		},
 	};
 }

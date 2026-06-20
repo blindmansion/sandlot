@@ -47,7 +47,7 @@ import {
 	summarizeDiagnostics,
 } from "../../src/toolchain/typecheck";
 import type { Diagnostic } from "../../src/toolchain/typecheck";
-import { createIframeRenderFn } from "../../src/render";
+import { buildRenderPayload, createIframeRenderFn } from "../../src/render";
 import type { EvalHandleToken, RenderHandle } from "../../src/render";
 import { createIframeWorkerRunFn } from "../../src/runtimes/iframe-worker-run";
 import { MemoryUnionFs } from "../helpers/memory-fs";
@@ -438,10 +438,18 @@ const sandlot: SandlotApi = {
 			platform: "browser",
 			target: "es2022",
 		});
-		const { code, css } = await session.rebuild();
+		const bundle = await session.rebuild();
+		const payload = await buildRenderPayload({
+			esbuild,
+			fs,
+			entryPoint,
+			entryResolveDir: "/",
+			bundle,
+			target: "es2022",
+		});
+		if (options?.css !== undefined) payload.css = options.css;
 		const handle = renderFn({
-			code,
-			css: options?.css ?? css,
+			payload,
 			hostFunctions: sandHostFunctions,
 		});
 		// Intentionally leave the handle open so the rendered view stays visible
