@@ -34,8 +34,36 @@ const NODE_MODULES = "/node_modules/";
 /** Synthetic entry path for the vendor (node_modules) bundle. */
 const VENDOR_ENTRY = "/__sandlot_vendor__.js";
 
+/** Synthetic entry path for the React Fast Refresh runtime bundle. */
+const REFRESH_ENTRY = "/__sandlot_refresh__.js";
+
+/** Marker file we probe to decide whether React Fast Refresh is available. */
+const REACT_REFRESH_MANIFEST = "/node_modules/react-refresh/package.json";
+
+/**
+ * Synthetic source for the Fast Refresh runtime blob. Bundled with
+ * `platform: "browser"` so esbuild substitutes `process.env.NODE_ENV` →
+ * `"development"`, selecting the real (non-stub) `react-refresh` runtime. It
+ * injects into the global hook eagerly so React (loaded later, in the vendor
+ * blob) registers its renderer through the refresh-aware hook, then exports the
+ * runtime instance for the module registry to thread into factories.
+ */
+const REFRESH_ENTRY_SOURCE = `
+const RefreshRuntime = require("react-refresh/runtime");
+const __global = typeof window !== "undefined" ? window : globalThis;
+RefreshRuntime.injectIntoGlobalHook(__global);
+// Babel-style globals: harmless no-ops here since registration is done at
+// runtime by scanning module exports (no source-level $RefreshReg$ calls).
+__global.$RefreshReg$ = function () {};
+__global.$RefreshSig$ = function () { return function (type) { return type; }; };
+module.exports = RefreshRuntime;
+`;
+
 /** Extensions we compile into individual registry factories. */
 const COMPILABLE = /\.(tsx?|jsx?|mjs|cjs|json)$/;
+
+/** Files that are React component modules by extension (JSX-bearing). */
+const JSX_MODULE = /\.(tsx|jsx)$/;
 
 /**
  * The runtime injects a per-module hot context as the `import_meta_hot` factory
@@ -127,6 +155,87 @@ function projectDepsFor(
 	return deps;
 }
 
+/** Whether a project module pulls in React (directly, or via JSX automatic). */
+function moduleUsesReact(path: string, graph: BundleGraph): boolean {
+	if (JSX_MODULE.test(path)) return true;
+	for (const edge of graph[path]?.imports ?? []) {
+		const spec = edge.original;
+		if (spec === "react" || spec?.startsWith("react/")) return true;
+		if (edge.path.includes("/node_modules/react/")) return true;
+	}
+	return false;
+}
+
+/**
+ * Decide whether React Fast Refresh should be wired in: the project must import
+ * React *and* have `react-refresh` installed. When false the render path behaves
+ * exactly as Phase 4 (no refresh blob, no per-module registration footers), so
+ * non-React projects pay nothing.
+ */
+async function detectReactRefresh(
+	fs: BundleFileSystem,
+	graph: BundleGraph,
+	projectPaths: Set<string>,
+): Promise<boolean> {
+	const usesReact = [...projectPaths].some((p) => moduleUsesReact(p, graph));
+	if (!usesReact) return false;
+	return fs.exists(REACT_REFRESH_MANIFEST);
+}
+
+/**
+ * Footer appended to a compiled component module: register every export that
+ * looks like a React component under a stable family id (`<path> <export>`), and
+ * self-accept iff *all* exports are components (matching `react-refresh`'s own
+ * boundary rule — a module that also exports non-components must propagate so its
+ * importers re-run). Registration on the initial mount seeds the families; on a
+ * patch the re-run registers the new types under the same ids and the accept
+ * walk calls `performReactRefresh()` to swap them in place, preserving state.
+ */
+function reactRefreshFooter(moduleId: string): string {
+	const id = JSON.stringify(moduleId);
+	return `
+;(function () {
+	if (!__react_refresh) return;
+	var __rr = __react_refresh, __all = true, __any = false;
+	for (var __k in module.exports) {
+		var __v;
+		try { __v = module.exports[__k]; } catch (e) { __all = false; continue; }
+		if (__rr.isLikelyComponentType(__v)) { __any = true; __rr.register(__v, ${id} + " " + __k); }
+		else { __all = false; }
+	}
+	if (__any && __all && import_meta_hot) import_meta_hot.accept();
+})();`;
+}
+
+/**
+ * Bundle the `react-refresh/runtime` into a self-injecting blob (see
+ * {@link REFRESH_ENTRY_SOURCE}). Uses the full bundler so the runtime's own
+ * dependency interop and the `process.env.NODE_ENV` substitution match a normal
+ * browser build.
+ */
+async function buildRefreshBlob(
+	esbuild: EsbuildAPI,
+	fs: BundleFileSystem,
+	target: string,
+	define: Record<string, string>,
+): Promise<string> {
+	const result = await bundleWithEsbuild(esbuild, {
+		fs,
+		entryPoint: REFRESH_ENTRY,
+		entryResolveDir: "/",
+		virtualFiles: {
+			[REFRESH_ENTRY]: { contents: REFRESH_ENTRY_SOURCE, loader: "js" },
+		},
+		options: resolveBundleOptions(undefined, {
+			format: "cjs",
+			platform: "browser",
+			target,
+			define,
+		}),
+	});
+	return result.code;
+}
+
 /**
  * Bundle everything the project imports from node_modules into one CJS blob that
  * evaluates to a `{ [specifier]: moduleExports }` map. Reusing the full bundler
@@ -189,6 +298,7 @@ async function compileModule(
 	asyncEntry: boolean,
 	target: string,
 	define: Record<string, string>,
+	footer?: string,
 ): Promise<{ code: string; async: boolean }> {
 	const loader = loaderForPath(path);
 	const hotDefine = { ...define, ...HOT_DEFINE };
@@ -209,7 +319,24 @@ async function compileModule(
 		jsx: "automatic",
 		define: hotDefine,
 	});
-	return { code: out.code, async: false };
+	return { code: footer ? `${out.code}\n${footer}` : out.code, async: false };
+}
+
+/**
+ * The Fast Refresh registration footer for a project module, or `undefined` when
+ * it shouldn't get one (refresh disabled, the import-less async entry, or a
+ * module that doesn't touch React). Shared by the initial payload and patches so
+ * a hot-swapped module is instrumented identically to its mounted self.
+ */
+function footerFor(
+	reactRefresh: boolean,
+	asyncEntry: boolean,
+	path: string,
+	graph: BundleGraph,
+): string | undefined {
+	if (!reactRefresh || asyncEntry) return undefined;
+	if (!moduleUsesReact(path, graph)) return undefined;
+	return reactRefreshFooter(path);
 }
 
 /**
@@ -236,17 +363,25 @@ export async function buildRenderPayload(
 		Object.keys(bundle.graph).filter(isProjectModule),
 	);
 
+	const reactRefresh = await detectReactRefresh(
+		fs,
+		bundle.graph,
+		projectPaths,
+	);
+
 	const modules: RenderModule[] = [];
 	for (const path of projectPaths) {
 		const source = await fs.readFile(path);
 		const deps = projectDepsFor(path, bundle.graph, projectPaths);
+		const asyncEntry = isAsyncEntry(path, entry, bundle.graph);
 		const { code, async } = await compileModule(
 			esbuild,
 			source,
 			path,
-			isAsyncEntry(path, entry, bundle.graph),
+			asyncEntry,
 			target,
 			define,
+			footerFor(reactRefresh, asyncEntry, path, bundle.graph),
 		);
 		modules.push({ path, code, deps, async });
 	}
@@ -264,6 +399,9 @@ export async function buildRenderPayload(
 		entry,
 		modules,
 		vendor,
+		...(reactRefresh
+			? { refresh: await buildRefreshBlob(esbuild, fs, target, define) }
+			: {}),
 		...(bundle.css ? { css: bundle.css } : {}),
 	};
 }
@@ -322,18 +460,26 @@ export async function buildRenderPatch(
 		Object.keys(bundle.graph).filter(isProjectModule),
 	);
 
+	const reactRefresh = await detectReactRefresh(
+		fs,
+		bundle.graph,
+		projectPaths,
+	);
+
 	const modules: RenderModule[] = [];
 	for (const path of args.changedPaths) {
 		if (!projectPaths.has(path)) continue;
 		const source = await fs.readFile(path);
 		const deps = projectDepsFor(path, bundle.graph, projectPaths);
+		const asyncEntry = isAsyncEntry(path, entry, bundle.graph);
 		const { code, async } = await compileModule(
 			esbuild,
 			source,
 			path,
-			isAsyncEntry(path, entry, bundle.graph),
+			asyncEntry,
 			target,
 			define,
+			footerFor(reactRefresh, asyncEntry, path, bundle.graph),
 		);
 		modules.push({ path, code, deps, async });
 	}

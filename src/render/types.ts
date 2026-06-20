@@ -57,6 +57,16 @@ export interface RenderPayload {
 	 * of everything imported from `node_modules`. Bare `require`s resolve here.
 	 */
 	vendor: string;
+	/**
+	 * React Fast Refresh runtime blob (present only when the project depends on
+	 * `react` and `react-refresh` is installed). Evaluated **before** the vendor
+	 * blob so it can patch the global hook before React initializes; it
+	 * `module.exports` the `react-refresh/runtime` instance, which the runtime
+	 * hands to each module factory as `__react_refresh`. Component modules use it
+	 * to register their component types and the accept walk calls
+	 * `performReactRefresh()` so `useState`/`useRef` survive a component edit.
+	 */
+	refresh?: string;
 	/** Combined CSS to inject as a <style> block in the iframe document. */
 	css?: string;
 }

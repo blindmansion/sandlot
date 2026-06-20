@@ -127,6 +127,23 @@ test("preamble emits the Phase 4 accept-boundary walk", () => {
 	expect(src).toContain("mode: mode, boundaries: boundaries");
 });
 
+test("preamble emits the Phase 5 React Fast Refresh wiring", () => {
+	const src = generateIframePreamble([], CHANNEL);
+
+	// The refresh runtime is threaded into every factory as a sibling of
+	// import_meta_hot, defaulting to null for non-React projects.
+	expect(src).toContain("let __refresh = null;");
+	expect(src).toContain(
+		'"module", "exports", "require", "import_meta_hot", "__react_refresh"',
+	);
+	expect(src).toContain("__refresh,");
+	// The refresh blob is evaluated before the vendor blob during mount.
+	expect(src).toContain("if (payload.refresh)");
+	expect(src).toContain("__refresh = __rmod.exports || null;");
+	// The accept walk swaps refreshed component types into the live tree.
+	expect(src).toContain("__refresh.performReactRefresh();");
+});
+
 test("the legacy blob runtime is gone", () => {
 	const src = generateIframePreamble([], CHANNEL);
 

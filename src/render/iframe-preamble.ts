@@ -225,6 +225,11 @@ const __cache = new Map();
 const __hot = new Map();
 let __vendor = {};
 let __entry = null;
+// The react-refresh runtime instance (set by __mount when the payload ships a
+// refresh blob), threaded into every module factory as import_meta_hot's sibling
+// so component modules can register their types and the accept walk can swap
+// them in place. Null for non-React projects (the Phase 4 path is unchanged).
+let __refresh = null;
 
 // Per-module hot context backing import.meta.hot. The persistent entry holds the
 // accept/dispose registrations of the *current* instance plus a data stash that
@@ -269,6 +274,7 @@ function __instantiate(key) {
 		module.exports,
 		function (s) { return __requireSync(key, s); },
 		__makeHot(key),
+		__refresh,
 		...__globalValues
 	);
 	return module;
@@ -280,7 +286,7 @@ function __registerModule(m) {
 	const body = m.async
 		? "return (async () => {\\n" + m.code + "\\n})();"
 		: m.code;
-	const factory = new Function("module", "exports", "require", "import_meta_hot", ...__globalNames, body);
+	const factory = new Function("module", "exports", "require", "import_meta_hot", "__react_refresh", ...__globalNames, body);
 	__registry.set(m.path, { factory: factory, deps: m.deps || {}, async: !!m.async });
 }
 
@@ -307,6 +313,14 @@ async function __runEntry() {
 }
 
 async function __mount(payload) {
+	// React Fast Refresh: evaluate the refresh blob *before* the vendor blob so
+	// it patches the global hook before React initializes its renderer. It
+	// exports the runtime instance the registry threads into module factories.
+	if (payload.refresh) {
+		const __rmod = { exports: {} };
+		(new Function("module", "exports", payload.refresh))(__rmod, __rmod.exports);
+		__refresh = __rmod.exports || null;
+	}
 	const __vmod = { exports: {} };
 	(new Function("module", "exports", payload.vendor))(__vmod, __vmod.exports);
 	__vendor = __vmod.exports || {};
@@ -358,13 +372,21 @@ async function __acceptWalk(changedPaths) {
 		__cache.delete(path);
 	}
 	// Re-instantiate each boundary (which lazily re-requires its affected deps),
-	// then fire its accept callback with the fresh exports.
+	// then fire its accept callback with the fresh exports. Re-running a module
+	// re-registers its component types (the refresh footer) under their stable
+	// family ids, so the new implementations are now the families' current type.
 	for (const path of boundaries) {
 		const module = __instantiate(path);
 		const rec = __registry.get(path);
 		if (rec && rec.ret && typeof rec.ret.then === "function") await rec.ret;
 		const hot = __hot.get(path);
 		if (hot && hot.acceptCb) { try { hot.acceptCb(module.exports); } catch (e) {} }
+	}
+	// React Fast Refresh: swap the freshly registered component types into the
+	// live tree, preserving hook state (useState/useRef/…) for components whose
+	// identity is unchanged. A no-op for non-React boundaries.
+	if (__refresh && boundaries.length) {
+		try { __refresh.performReactRefresh(); } catch (e) {}
 	}
 	return { mode: "boundary", boundaries: boundaries };
 }

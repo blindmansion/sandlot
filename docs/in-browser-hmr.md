@@ -596,13 +596,8 @@ State preservation across JS edits requires framework-aware refresh runtimes;
 don't hand-roll them.
 
 - **React** (`test/fixtures/react-app`, mounts via `createRoot` in
-  `src/index.tsx`): integrate `react-refresh`.
-  - Inject the `react-refresh/runtime` into the iframe runtime once.
-  - Wrap each transformed React module with the refresh register/sign calls
-    (this is the `react-refresh/babel` transform; with esbuild we apply the
-    equivalent banner/footer or a lightweight inject step during §6.2).
-  - Each refreshable module calls `import_meta_hot.accept()` and
-    `RefreshRuntime.performReactRefresh()` so hooks/state survive.
+  `src/index.tsx`): integrate `react-refresh`. ✅ **Done** — see the Phase 5
+  notes below.
 - **Lit / web components** (`test/fixtures/lit-app`, mounts a custom element
   into `#root` in `src/index.ts`): custom elements can't be re-defined under the
   same tag name. Practical v1: accept at the module root and **full-reload** the
@@ -610,7 +605,50 @@ don't hand-roll them.
   a later enhancement; reload is acceptable.
 
 Framework refresh sits on top of the registry + accept-walk; it is additive and
-should be the last phase.
+is the last JS-state phase.
+
+### 11.1 React Fast Refresh (as implemented)
+
+Fast Refresh is wired entirely through the existing registry + accept-walk; it is
+**opt-in by detection** and a no-op for non-React projects.
+
+- **Detection (`detectReactRefresh`, `src/render/payload.ts`).** Enabled only
+  when the project imports React *and* `react-refresh` is installed
+  (`/node_modules/react-refresh/package.json` exists). Otherwise the payload
+  ships no refresh blob and no module footers — the Phase 4 path is byte-for-byte
+  unchanged, so non-React code carries zero risk.
+- **Refresh blob (`buildRefreshBlob`).** A separate CJS blob bundles
+  `react-refresh/runtime` and calls `injectIntoGlobalHook(window)`, then
+  `module.exports` the runtime. It is evaluated **before** the vendor blob in
+  `__mount` (`src/render/iframe-preamble.ts`) so React registers its renderer
+  through the refresh-aware hook. Because the vendor blob is built with
+  `platform: "browser"`, esbuild substitutes `process.env.NODE_ENV =
+  "development"`, i.e. React's dev build (Fast Refresh requires it) is already
+  what mounts — no extra config.
+- **Per-module registration (`reactRefreshFooter`).** Instead of running the
+  `react-refresh/babel` transform, each React module gets a small runtime footer
+  appended after its esbuild `transform`: it scans `module.exports`, registers
+  every export `isLikelyComponentType` finds under a stable family id
+  (`"<path> <export>"`), and self-accepts via `import.meta.hot.accept()` iff
+  *all* exports are components (matching react-refresh's own boundary rule — a
+  module that also exports non-components must propagate so importers re-run).
+  This avoids pulling Babel into the browser; the cost is no hook **signatures**,
+  so editing a component's hook list isn't auto-detected (a manual reload
+  recovers). Editing a component *body* preserves `useState`/`useRef`.
+- **Threading (`__react_refresh`).** The runtime hands the refresh instance to
+  every factory as the parameter after `import_meta_hot`
+  (`(module, exports, require, import_meta_hot, __react_refresh, ...globals)`),
+  defaulting to `null`. The footer is the only code that touches it.
+- **Swap (`__acceptWalk`).** After the boundary modules re-run (re-registering
+  their new component types under the same family ids), the walk calls
+  `__refresh.performReactRefresh()` once, which swaps the implementations into
+  the live tree while preserving hook state. Modules that don't self-accept
+  propagate to an importer boundary (e.g. editing a custom hook re-runs the
+  consuming component) or fall back to the Phase 3 soft re-run.
+
+The intrusiveness is contained: the only shared-runtime touch points (the extra
+factory parameter, the pre-vendor blob eval, and one `performReactRefresh()`
+call) are all null-guarded, so a Lit or vanilla project is unaffected.
 
 ---
 
@@ -663,7 +701,19 @@ correctness throughout.
    boundary preserving a sibling singleton; `dispose`/`data` carrying state
    forward; a no-accept leaf falling back to `rerun`) and the codegen assertions
    in `test/render-preamble.test.ts`.
-5. **React refresh** (§11): state preservation for `react-app`.
+5. **React refresh** (§11). ✅ **Done.** When the project uses React and
+   `react-refresh` is installed, `buildRenderPayload` (`src/render/payload.ts`)
+   ships a self-injecting refresh blob (`RenderPayload.refresh`) evaluated before
+   the vendor blob, and appends a registration footer to each React module
+   (register components by stable family id + self-accept when all exports are
+   components). The runtime threads the refresh instance into every factory as
+   `__react_refresh`, and `__acceptWalk` (`src/render/iframe-preamble.ts`) calls
+   `performReactRefresh()` after a boundary re-runs, so `useState`/`useRef`
+   survive a component-body edit. Detection gates everything: non-React projects
+   get the exact Phase 4 behavior. Covered by `test/render-payload.test.ts` (a
+   component registers under a stable id on mount, then re-registers + refreshes
+   on patch with the same family id) and the codegen assertions in
+   `test/render-preamble.test.ts`; verified in-browser against `react-app`.
 6. **Polish:** error overlay surfaced through the existing `log` channel,
    source-map fidelity, patch debounce tuning, and HMR latency measurement
    (WASM transform cost per edit is the thing to watch).

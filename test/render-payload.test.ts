@@ -72,6 +72,20 @@ function makeRuntime(
 	const gNames = Object.keys(globals);
 	const gVals = Object.values(globals);
 
+	// Refresh blob (Phase 5) → the react-refresh runtime instance, evaluated
+	// before the vendor blob (mirroring the iframe mount order). Only
+	// performReactRefresh is invoked from the reference runtime (register /
+	// isLikelyComponentType are called from inside module code).
+	let refresh: { performReactRefresh(): void } | null = null;
+	if (payload.refresh) {
+		const refreshModule: { exports: Record<string, unknown> } = { exports: {} };
+		new Function("module", "exports", payload.refresh)(
+			refreshModule,
+			refreshModule.exports,
+		);
+		refresh = refreshModule.exports as unknown as { performReactRefresh(): void };
+	}
+
 	// Vendor blob → { [specifier]: exports } map.
 	const vendorModule: { exports: Record<string, unknown> } = { exports: {} };
 	new Function("module", "exports", payload.vendor)(
@@ -122,6 +136,7 @@ function makeRuntime(
 			"exports",
 			"require",
 			"import_meta_hot",
+			"__react_refresh",
 			...gNames,
 			body,
 		) as Record_["factory"];
@@ -156,6 +171,7 @@ function makeRuntime(
 			module.exports,
 			(s: string) => requireSync(key, s),
 			makeHot(key),
+			refresh,
 			...gVals,
 		);
 		return module;
@@ -248,6 +264,13 @@ function makeRuntime(
 				} catch {
 					/* accept callback errors don't abort the walk */
 				}
+			}
+		}
+		if (refresh && boundaries.length) {
+			try {
+				refresh.performReactRefresh();
+			} catch {
+				/* refresh errors don't abort the walk */
 			}
 		}
 		return {
@@ -504,6 +527,139 @@ test("import.meta.hot.dispose stashes state that the re-run reads back", async (
 		expect(after.exports.label).toBe("v2demo");
 		// dispose stashed count=1; the new instance read it back and bumped to 2.
 		expect((after.exports.value as () => number)()).toBe(2);
+	} finally {
+		await ws.cleanup();
+	}
+});
+
+test("react fast refresh: component module registers + refreshes under a stable family id", async () => {
+	const ws = await createWorkspace("payload-refresh");
+	try {
+		await ws.fs.mkdir("/src", { recursive: true });
+		// Minimal `react` stub so a component module's `import { useState }`
+		// resolves into the vendor blob (no real React needed for this wiring test).
+		await ws.fs.mkdir("/node_modules/react", { recursive: true });
+		await ws.fs.writeFile(
+			"/node_modules/react/package.json",
+			JSON.stringify({ name: "react", version: "18.0.0", main: "index.js" }),
+		);
+		await ws.fs.writeFile(
+			"/node_modules/react/index.js",
+			"exports.useState = function (init) { return [init, function () {}]; };\n",
+		);
+		// Minimal `react-refresh` stub. Its runtime records register/refresh/inject
+		// calls onto a global sink so the test can assert the wiring fired. This is
+		// the same surface (`injectIntoGlobalHook`, `register`,
+		// `isLikelyComponentType`, `performReactRefresh`) the real runtime exposes.
+		await ws.fs.mkdir("/node_modules/react-refresh", { recursive: true });
+		await ws.fs.writeFile(
+			"/node_modules/react-refresh/package.json",
+			JSON.stringify({
+				name: "react-refresh",
+				version: "0.14.2",
+				main: "runtime.js",
+			}),
+		);
+		await ws.fs.writeFile(
+			"/node_modules/react-refresh/runtime.js",
+			[
+				"var sink = globalThis;",
+				"var log = sink.__SANDLOT_RR__;",
+				"exports.injectIntoGlobalHook = function () { log.injected++; };",
+				"exports.register = function (type, id) { log.registers.push(id); log.families[id] = type; };",
+				'exports.isLikelyComponentType = function (v) { return typeof v === "function" && /^[A-Z]/.test(v.name || ""); };',
+				"exports.performReactRefresh = function () { log.refreshes++; };",
+				"exports.createSignatureFunctionForTransform = function () { return function (t) { return t; }; };",
+				"",
+			].join("\n"),
+		);
+		await ws.fs.writeFile(
+			"/package.json",
+			JSON.stringify({ name: "demo", dependencies: { react: "18.0.0" } }),
+		);
+
+		const widget = (label: string) =>
+			'import { useState } from "react";\n' +
+			"export function Widget() {\n" +
+			"\tconst [n] = useState(0);\n" +
+			`\treturn ${JSON.stringify(label)} + n;\n` +
+			"}\n";
+		await ws.fs.writeFile("/src/widget.ts", widget("widget:"));
+		// Entry doesn't touch React → not a refresh boundary; it just renders the
+		// component so the family is seeded on mount.
+		await ws.fs.writeFile(
+			"/src/index.ts",
+			'import { Widget } from "./widget";\n' +
+				"export const view = () => Widget();\n",
+		);
+
+		const payload = await bundleAndBuildPayload(ws.fs, "/src/index.ts");
+		// A refresh blob is shipped, and the component module carries the footer.
+		expect(typeof payload.refresh).toBe("string");
+		expect(payload.refresh).toContain("injectIntoGlobalHook");
+		const widgetMod = payload.modules.find((m) => m.path === "/src/widget.ts");
+		expect(widgetMod?.code).toContain("isLikelyComponentType");
+		expect(widgetMod?.code).toContain("import_meta_hot.accept()");
+		// The entry has no React → no footer.
+		const indexMod = payload.modules.find((m) => m.path === "/src/index.ts");
+		expect(indexMod?.code).not.toContain("isLikelyComponentType");
+
+		const sink = globalThis as unknown as {
+			__SANDLOT_RR__: {
+				injected: number;
+				refreshes: number;
+				registers: string[];
+				families: Record<string, () => string>;
+			};
+		};
+		sink.__SANDLOT_RR__ = {
+			injected: 0,
+			refreshes: 0,
+			registers: [],
+			families: {},
+		};
+
+		const runtime = makeRuntime(payload);
+		const before = await runtime.start();
+		// The refresh runtime injected before vendor, and the component registered
+		// under its stable family id on the initial mount.
+		expect(sink.__SANDLOT_RR__.injected).toBe(1);
+		expect(sink.__SANDLOT_RR__.registers).toContain("/src/widget.ts Widget");
+		expect(sink.__SANDLOT_RR__.refreshes).toBe(0);
+		expect((before.view as () => string)()).toBe("widget:0");
+		const firstType = sink.__SANDLOT_RR__.families["/src/widget.ts Widget"];
+
+		// Edit the component body and patch it in.
+		await ws.fs.writeFile("/src/widget.ts", widget("WIDGET:"));
+		const bundle = await bundleWithEsbuild(esbuild, {
+			fs: ws.fs,
+			entryPoint: "/src/index.ts",
+			entryResolveDir: "/",
+			options: resolveBundleOptions(undefined, {
+				format: "esm",
+				platform: "browser",
+				target: "es2022",
+			}),
+		});
+		const patch = await buildRenderPatch({
+			esbuild,
+			fs: ws.fs,
+			entryPoint: "/src/index.ts",
+			bundle,
+			changedPaths: ["/src/widget.ts"],
+			target: "es2022",
+		});
+
+		const after = await runtime.applyPatch(patch);
+		// widget self-accepted → it's the boundary; the refresh ran once.
+		expect(after.mode).toBe("boundary");
+		expect(after.boundaries).toEqual(["/src/widget.ts"]);
+		expect(sink.__SANDLOT_RR__.refreshes).toBe(1);
+		// The new component type was registered under the *same* family id — the
+		// mechanism by which React swaps implementations while preserving state.
+		const secondType = sink.__SANDLOT_RR__.families["/src/widget.ts Widget"];
+		expect(secondType).not.toBe(firstType);
+		expect(secondType?.()).toBe("WIDGET:0");
 	} finally {
 		await ws.cleanup();
 	}
