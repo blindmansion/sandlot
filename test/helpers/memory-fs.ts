@@ -15,12 +15,9 @@
  * ```
  */
 
+import type { BundleFileSystem } from "../../src/toolchain/bundle/fs";
 import type {
-	BundleFileSystem,
-	BundleMkdirOptions,
 	FileContent,
-} from "../../src/toolchain/bundle/fs";
-import type {
 	InstallFileSystem,
 	InstallMkdirOptions,
 	InstallRmOptions,
@@ -254,10 +251,7 @@ export class MemoryUnionFs
 		this.data.set(norm, { type: "file", content: toBytes(content) });
 	}
 
-	async mkdir(
-		path: string,
-		options?: InstallMkdirOptions | BundleMkdirOptions,
-	): Promise<void> {
+	async mkdir(path: string, options?: InstallMkdirOptions): Promise<void> {
 		const norm = cleanPath(path);
 		const existing = this.data.get(norm);
 		if (existing) {

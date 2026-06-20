@@ -17,12 +17,9 @@
 import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as nodePath from "node:path";
+import type { BundleFileSystem } from "../../src/toolchain/bundle/fs";
 import type {
-	BundleFileSystem,
-	BundleMkdirOptions,
 	FileContent,
-} from "../../src/toolchain/bundle/fs";
-import type {
 	InstallFileSystem,
 	InstallMkdirOptions,
 	InstallRmOptions,
@@ -173,10 +170,7 @@ export class NodeUnionFs
 		await fs.writeFile(this.toReal(path), content);
 	}
 
-	async mkdir(
-		path: string,
-		options?: InstallMkdirOptions | BundleMkdirOptions,
-	): Promise<void> {
+	async mkdir(path: string, options?: InstallMkdirOptions): Promise<void> {
 		await fs.mkdir(this.toReal(path), { recursive: options?.recursive });
 	}
 

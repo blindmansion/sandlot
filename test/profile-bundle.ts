@@ -328,6 +328,15 @@ async function profileEngine(
 	args: BundleArgs,
 	editPath: string,
 ): Promise<EngineProfile> {
+	// The bundler's `BundleFileSystem` is read-only by contract; the profiler
+	// mutates the project (edit loop + create/delete correctness) through the
+	// concrete writable fs underneath it.
+	const writeFs = args.fs as unknown as {
+		writeFile(path: string, content: string): Promise<void>;
+		mkdir(path: string, options?: { recursive?: boolean }): Promise<void>;
+		rm(path: string): Promise<void>;
+	};
+
 	// ── One-shot: createBundleFn() ──────────────────────────────────────
 	banner(`${name} — one-shot: createBundleFn() rebuilds every call`);
 	const bundle = createBundleFn(engine);
@@ -357,11 +366,11 @@ async function profileEngine(
 
 	const oneShotEdit: number[] = [];
 	for (let i = 0; i < EDIT_RUNS; i++) {
-		await args.fs.writeFile(editPath, editContent(i));
+		await writeFs.writeFile(editPath, editContent(i));
 		const [, t] = await timed(() => bundle(args));
 		oneShotEdit.push(t);
 	}
-	await args.fs.writeFile(editPath, editContent(0));
+	await writeFs.writeFile(editPath, editContent(0));
 	reportStats("edit", summarize(oneShotEdit));
 
 	// ── Persistent: createBundleSession() ───────────────────────────────
@@ -394,7 +403,7 @@ async function profileEngine(
 		const persistentEdit: number[] = [];
 		let editMismatch = 0;
 		for (let i = 0; i < EDIT_RUNS; i++) {
-			await args.fs.writeFile(editPath, editContent(i));
+			await writeFs.writeFile(editPath, editContent(i));
 			// Notify after mutating the fs, per the session contract. (A pure
 			// content edit to an already-resolved file would survive without this,
 			// but real callers notify uniformly, so we exercise that path.)
@@ -405,7 +414,7 @@ async function profileEngine(
 			const fresh = await bundle(args);
 			if (bundleSignature(result) !== bundleSignature(fresh)) editMismatch++;
 		}
-		await args.fs.writeFile(editPath, editContent(0));
+		await writeFs.writeFile(editPath, editContent(0));
 		session.changed(editPath);
 		reportStats("edit", summarize(persistentEdit));
 		info(
@@ -419,7 +428,6 @@ async function profileEngine(
 		// happens if the cached negative/positive stat probe is dropped on notify,
 		// so any staleness shows up as a mismatch against a fresh one-shot build.
 		banner(`${name} — create/delete correctness (cache invalidation)`);
-		const mutFs = args.fs as unknown as { rm(path: string): Promise<void> };
 		const dirModIndex = "/src/shadow/index.ts";
 		const shadowFile = "/src/shadow.ts";
 		let createDeleteOk = true;
@@ -432,9 +440,9 @@ async function profileEngine(
 		};
 
 		// Baseline: only the directory module exists, so "./shadow" → shadow/index.ts.
-		await args.fs.mkdir("/src/shadow", { recursive: true });
-		await args.fs.writeFile(dirModIndex, `export const FROM = "dir";\n`);
-		await args.fs.writeFile(
+		await writeFs.mkdir("/src/shadow", { recursive: true });
+		await writeFs.writeFile(dirModIndex, `export const FROM = "dir";\n`);
+		await writeFs.writeFile(
 			editPath,
 			`import { FROM } from "./shadow";\nexport const USED = FROM;\n`,
 		);
@@ -444,8 +452,8 @@ async function profileEngine(
 
 		// Create the shadowing file; touch the importer so esbuild re-resolves.
 		// The cached negative probe for shadow.ts must be dropped for it to win.
-		await args.fs.writeFile(shadowFile, `export const FROM = "file";\n`);
-		await args.fs.writeFile(
+		await writeFs.writeFile(shadowFile, `export const FROM = "file";\n`);
+		await writeFs.writeFile(
 			editPath,
 			`import { FROM } from "./shadow";\nexport const USED = FROM; // r1\n`,
 		);
@@ -454,8 +462,8 @@ async function profileEngine(
 		await checkMatchesFresh();
 
 		// Delete the shadowing file; resolution must fall back to the directory.
-		await mutFs.rm(shadowFile);
-		await args.fs.writeFile(
+		await writeFs.rm(shadowFile);
+		await writeFs.writeFile(
 			editPath,
 			`import { FROM } from "./shadow";\nexport const USED = FROM; // r2\n`,
 		);
@@ -469,7 +477,7 @@ async function profileEngine(
 		);
 
 		// Restore the baseline graph for the next engine.
-		await args.fs.writeFile(editPath, editContent(0));
+		await writeFs.writeFile(editPath, editContent(0));
 		session.changed(editPath);
 
 		// ── Speedup (persistent vs one-shot) ────────────────────────────

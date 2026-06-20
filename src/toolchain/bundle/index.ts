@@ -8,12 +8,7 @@ export {
 export { createBundleFn } from "./core";
 export { formatBundleError } from "./errors";
 export { createBundleSession } from "./session";
-export type {
-	BundleFileStat,
-	BundleFileSystem,
-	BundleMkdirOptions,
-	FileContent,
-} from "./fs";
+export type { BundleFileStat, BundleFileSystem } from "./fs";
 export type {
 	BundleArgs,
 	BundleFn,
