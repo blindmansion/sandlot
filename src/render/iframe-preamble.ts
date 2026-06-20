@@ -286,7 +286,18 @@ function __registerModule(m) {
 	const body = m.async
 		? "return (async () => {\\n" + m.code + "\\n})();"
 		: m.code;
-	const factory = new Function("module", "exports", "require", "import_meta_hot", "__react_refresh", ...__globalNames, body);
+	// Evaluate the factory as a function expression via (indirect) eval instead
+	// of new Function: eval line numbering is deterministic (the header is one
+	// line), so the build can offset each module's source map to line up. The
+	// //# sourceURL names the frame after the original file and //# sourceMappingURL
+	// maps generated positions back to the .ts/.tsx source in DevTools + stacks.
+	// Indirect eval keeps the factory in global scope (parity with new Function).
+	const __params = ["module", "exports", "require", "import_meta_hot", "__react_refresh"].concat(__globalNames).join(",");
+	let __src = "(function(" + __params + "){\\n" + body + "\\n})";
+	if (m.map) {
+		__src += "\\n//# sourceURL=sandlot://" + m.path + "\\n//# sourceMappingURL=" + m.map;
+	}
+	const factory = (0, eval)(__src);
 	__registry.set(m.path, { factory: factory, deps: m.deps || {}, async: !!m.async });
 }
 

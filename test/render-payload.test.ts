@@ -131,15 +131,22 @@ function makeRuntime(
 		// Async modules (import-less entry mount code) may use top-level await, so
 		// their body runs inside an async IIFE whose promise the runtime awaits.
 		const body = m.async ? `return (async () => {\n${m.code}\n})();` : m.code;
-		const factory = new Function(
+		// Mirror the iframe runtime: eval a function expression (so source maps
+		// line up) and attach sourceURL/sourceMappingURL when a map is present.
+		const params = [
 			"module",
 			"exports",
 			"require",
 			"import_meta_hot",
 			"__react_refresh",
 			...gNames,
-			body,
-		) as Record_["factory"];
+		].join(",");
+		let src = `(function(${params}){\n${body}\n})`;
+		if (m.map) {
+			src += `\n//# sourceURL=sandlot://${m.path}\n//# sourceMappingURL=${m.map}`;
+		}
+		// biome-ignore lint/security/noGlobalEval: faithful mirror of the iframe runtime's eval-based factory registration.
+		const factory = (0, eval)(src) as Record_["factory"];
 		registry.set(m.path, { factory, deps: m.deps, async: m.async });
 	}
 
@@ -315,6 +322,65 @@ test("basic fixture: project modules registered, empty vendor, require resolves"
 		const exports = await makeRuntime(payload).start();
 		expect(typeof exports.main).toBe("function");
 		expect((exports.main as () => string)()).toBe("Hello, world!");
+	} finally {
+		await ws.cleanup();
+	}
+});
+
+test("source maps: modules carry offset inline maps; opt-out drops them", async () => {
+	const ws = await loadFixture("basic");
+	try {
+		// Default (sourcemap on): every module ships an inline map data URI.
+		const payload = await bundleAndBuildPayload(ws.fs, "/src/index.ts");
+		for (const m of payload.modules) {
+			expect(m.map).toBeDefined();
+			expect(m.map).toMatch(
+				/^data:application\/json;charset=utf-8;base64,/,
+			);
+		}
+
+		// Decode one map and verify it points back at the original source and is
+		// offset for the eval wrapper (a leading ";" shifts mappings down a line).
+		const index = payload.modules.find((m) => m.path === "/src/index.ts");
+		const b64 = (index?.map ?? "").split("base64,")[1] ?? "";
+		const decoded = JSON.parse(
+			Buffer.from(b64, "base64").toString("utf-8"),
+		) as {
+			version: number;
+			sources: string[];
+			sourcesContent?: string[];
+			mappings: string;
+		};
+		expect(decoded.version).toBe(3);
+		expect(decoded.sources.some((s) => s.includes("index.ts"))).toBe(true);
+		expect(decoded.sourcesContent?.[0]).toContain("greeting");
+		// Sync module → one wrapper line → mappings begins with the offset ";".
+		expect(decoded.mappings.startsWith(";")).toBe(true);
+
+		// The eval'd factories still execute correctly with maps attached.
+		const exports = await makeRuntime(payload).start();
+		expect((exports.main as () => string)()).toBe("Hello, world!");
+
+		// Opt-out: no map fields emitted.
+		const bundle = await bundleWithEsbuild(esbuild, {
+			fs: ws.fs,
+			entryPoint: "/src/index.ts",
+			entryResolveDir: "/",
+			options: resolveBundleOptions(undefined, {
+				format: "esm",
+				platform: "browser",
+				target: "es2022",
+			}),
+		});
+		const bare = await buildRenderPayload({
+			esbuild,
+			fs: ws.fs,
+			entryPoint: "/src/index.ts",
+			bundle,
+			target: "es2022",
+			sourcemap: false,
+		});
+		for (const m of bare.modules) expect(m.map).toBeUndefined();
 	} finally {
 		await ws.cleanup();
 	}

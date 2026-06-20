@@ -714,9 +714,46 @@ correctness throughout.
    component registers under a stable id on mount, then re-registers + refreshes
    on patch with the same family id) and the codegen assertions in
    `test/render-preamble.test.ts`; verified in-browser against `react-app`.
-6. **Polish:** error overlay surfaced through the existing `log` channel,
-   source-map fidelity, patch debounce tuning, and HMR latency measurement
-   (WASM transform cost per edit is the thing to watch).
+6. **Polish — source-map fidelity.** ✅ **Done.** Per-module transforms now emit
+   source maps (`buildRenderPayload`/`buildRenderPatch` → `compileModule`,
+   `src/render/payload.ts`): each {@link RenderModule} carries an inline
+   `data:` map (`RenderModule.map`) whose `mappings` are pre-offset for the
+   wrapper lines the runtime prepends. The iframe runtime registers factories via
+   indirect `eval` of a function expression (not `new Function`) so line
+   numbering is deterministic, appending `//# sourceURL=sandlot://<path>` and
+   `//# sourceMappingURL=<map>` (`__registerModule`, `src/render/iframe-preamble.ts`).
+   So DevTools and stack traces resolve to the original `.ts`/`.tsx` source —
+   verified in-browser (a thrown error frames as `sandlot:///src/boom.ts`) and by
+   `test/render-payload.test.ts` (valid v3 map, `sources`/`sourcesContent`, the
+   offset, eval execution) + `test/render-preamble.test.ts` codegen. On by
+   default; `sourcemap: false` drops maps to shrink production-style payloads.
+
+   The remaining Phase 6 items are **implementer territory**, not core work: an
+   error overlay is the embedder's UI (the data already flows out —
+   `PatchResult.error` on `full-reload`, plus a thrown `buildRenderPatch` for
+   compile errors), and patch debounce / latency measurement are owned by
+   whoever drives `applyPatch`. A small follow-on worth considering: enrich
+   `RunError` with a structured `{file,line,column}` now that maps exist, so an
+   overlay needn't parse stacks.
+
+   **Known gap — only the render module-registry pathway is covered.** Source maps
+   were wired into the per-module render path only. The other two execution paths
+   are unchanged and have no working maps:
+   - **Worker run pathway** (`createIframeWorkerRunFn` → `src/run/guest-preamble.ts`).
+     `__execute` runs a *single full bundle* via `new Function` + an
+     `(async () => { … })()` wrapper + `stripExports`. Even though the bundler
+     defaults to `sourcemap: "inline"`, that map is both misaligned (the wrapper
+     and `new Function` header shift lines) and unnamed (no `sourceURL`), so a
+     `run()` error stack points at an anonymous `blob:`/eval frame. Fixable with
+     the same `eval` + `sourceURL` + offset trick, but it's a distinct change: the
+     map arrives baked into the bundle string (from esbuild `build`, not a
+     `transform` result), so it must be extracted/re-encoded rather than offset
+     from a clean `out.map`. Best paired with the `RunError` `{file,line,column}`
+     follow-on, since headless `run()` is where structured locations pay off.
+   - **Render `evaluate()` snippets** (`__evaluate`, `src/render/iframe-preamble.ts`)
+     still use `new Function` + `stripExports` with no map. Intentionally skipped:
+     these are ad-hoc host-supplied snippets, not project source files, so there
+     is usually nothing to map back to.
 
 ---
 
@@ -792,3 +829,6 @@ correctness throughout.
   Covered by `test/render-payload.test.ts`.
 - **React refresh (Phase 5):** edit a component body, assert `useState` value
   persists across the edit.
+- **Source maps (Phase 6):** assert each module ships a valid, offset v3 inline
+  map (`test/render-payload.test.ts`) and that a thrown error frames against
+  `sandlot://<path>` in-browser (the eval-based registration + `sourceURL`).

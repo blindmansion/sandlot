@@ -93,6 +93,13 @@ export interface BuildRenderPayloadArgs {
 	target?: string;
 	/** esbuild `define` map applied to each per-module transform. */
 	define?: Record<string, string>;
+	/**
+	 * Emit per-module source maps (inline `data:` URIs on {@link RenderModule.map})
+	 * so the runtime can map evaluated code back to original `.ts`/`.tsx` source in
+	 * DevTools and stack traces. Defaults to `true`; disable to shrink the payload
+	 * for production-style mounts where debugging fidelity is not needed.
+	 */
+	sourcemap?: boolean;
 }
 
 /** Pick the esbuild loader for a project module path. */
@@ -117,6 +124,35 @@ function isProjectModule(path: string): boolean {
  */
 function stripExports(code: string): string {
 	return code.replace(/\bexport\s*\{[^}]*\}\s*;?/g, "");
+}
+
+/** UTF-8-safe base64, working in both Node and the browser (esbuild-wasm). */
+function toBase64Utf8(input: string): string {
+	if (typeof Buffer !== "undefined") {
+		return Buffer.from(input, "utf-8").toString("base64");
+	}
+	const bytes = new TextEncoder().encode(input);
+	let binary = "";
+	for (const byte of bytes) binary += String.fromCharCode(byte);
+	return btoa(binary);
+}
+
+/**
+ * Turn an esbuild `transform` source map into an inline `data:` URI for a
+ * `//# sourceMappingURL=` comment. `lineOffset` shifts every mapping down by the
+ * wrapper lines the runtime prepends when it `eval`s a module factory: one for
+ * the `(function (…) {` header, plus one more for the async IIFE on async
+ * modules. `eval` line numbering is deterministic and the header is always a
+ * single line (params are comma-joined), so the offset is a build-time constant.
+ */
+function inlineSourceMap(mapJson: string, lineOffset: number): string {
+	let json = mapJson;
+	if (lineOffset > 0) {
+		const map = JSON.parse(mapJson) as { mappings?: string };
+		map.mappings = ";".repeat(lineOffset) + (map.mappings ?? "");
+		json = JSON.stringify(map);
+	}
+	return `data:application/json;charset=utf-8;base64,${toBase64Utf8(json)}`;
 }
 
 /** Collect the set of bare specifiers any project module imports from node_modules. */
@@ -299,9 +335,15 @@ async function compileModule(
 	target: string,
 	define: Record<string, string>,
 	footer?: string,
-): Promise<{ code: string; async: boolean }> {
+	sourcemap = true,
+): Promise<{ code: string; async: boolean; map?: string }> {
 	const loader = loaderForPath(path);
 	const hotDefine = { ...define, ...HOT_DEFINE };
+	// `sourcemap: true` returns the map separately (no inline comment in code);
+	// `sourcefile` names the original source the map (and `//# sourceURL`) points at.
+	const mapOpts = sourcemap
+		? ({ sourcemap: true, sourcefile: path } as const)
+		: {};
 	if (asyncEntry) {
 		const out = await esbuild.transform(source, {
 			loader,
@@ -309,8 +351,14 @@ async function compileModule(
 			target,
 			jsx: "automatic",
 			define: hotDefine,
+			...mapOpts,
 		});
-		return { code: stripExports(out.code), async: true };
+		// Async modules add the IIFE line on top of the eval header → offset 2.
+		return {
+			code: stripExports(out.code),
+			async: true,
+			...(sourcemap && out.map ? { map: inlineSourceMap(out.map, 2) } : {}),
+		};
 	}
 	const out = await esbuild.transform(source, {
 		loader,
@@ -318,8 +366,15 @@ async function compileModule(
 		target,
 		jsx: "automatic",
 		define: hotDefine,
+		...mapOpts,
 	});
-	return { code: footer ? `${out.code}\n${footer}` : out.code, async: false };
+	// The footer (if any) is appended after the mapped body, so the offset is
+	// just the single eval-header line.
+	return {
+		code: footer ? `${out.code}\n${footer}` : out.code,
+		async: false,
+		...(sourcemap && out.map ? { map: inlineSourceMap(out.map, 1) } : {}),
+	};
 }
 
 /**
@@ -353,6 +408,7 @@ export async function buildRenderPayload(
 		entryResolveDir = "/",
 		target = "es2022",
 		define = {},
+		sourcemap = true,
 	} = args;
 
 	const entry = isAbsolute(args.entryPoint)
@@ -374,7 +430,7 @@ export async function buildRenderPayload(
 		const source = await fs.readFile(path);
 		const deps = projectDepsFor(path, bundle.graph, projectPaths);
 		const asyncEntry = isAsyncEntry(path, entry, bundle.graph);
-		const { code, async } = await compileModule(
+		const { code, async, map } = await compileModule(
 			esbuild,
 			source,
 			path,
@@ -382,8 +438,9 @@ export async function buildRenderPayload(
 			target,
 			define,
 			footerFor(reactRefresh, asyncEntry, path, bundle.graph),
+			sourcemap,
 		);
-		modules.push({ path, code, deps, async });
+		modules.push({ path, code, deps, async, ...(map ? { map } : {}) });
 	}
 
 	const vendorSpecifiers = collectVendorSpecifiers(bundle.graph, projectPaths);
@@ -427,6 +484,12 @@ export interface BuildRenderPatchArgs {
 	target?: string;
 	/** esbuild `define` map applied to each per-module transform. */
 	define?: Record<string, string>;
+	/**
+	 * Emit per-module source maps (inline `data:` URIs on {@link RenderModule.map}).
+	 * Defaults to `true`. Keep this aligned with the initial payload so a
+	 * hot-swapped module debugs identically to its mounted self.
+	 */
+	sourcemap?: boolean;
 }
 
 /**
@@ -450,6 +513,7 @@ export async function buildRenderPatch(
 		entryResolveDir = "/",
 		target = "es2022",
 		define = {},
+		sourcemap = true,
 	} = args;
 
 	const entry = isAbsolute(args.entryPoint)
@@ -472,7 +536,7 @@ export async function buildRenderPatch(
 		const source = await fs.readFile(path);
 		const deps = projectDepsFor(path, bundle.graph, projectPaths);
 		const asyncEntry = isAsyncEntry(path, entry, bundle.graph);
-		const { code, async } = await compileModule(
+		const { code, async, map } = await compileModule(
 			esbuild,
 			source,
 			path,
@@ -480,8 +544,9 @@ export async function buildRenderPatch(
 			target,
 			define,
 			footerFor(reactRefresh, asyncEntry, path, bundle.graph),
+			sourcemap,
 		);
-		modules.push({ path, code, deps, async });
+		modules.push({ path, code, deps, async, ...(map ? { map } : {}) });
 	}
 	return modules;
 }

@@ -41,6 +41,14 @@ export interface RenderModule {
 	 * for synchronous CommonJS modules.
 	 */
 	async: boolean;
+	/**
+	 * Inline source map (a `data:application/json;…;base64,…` URI) for {@link code},
+	 * already offset for the wrapper lines the runtime prepends when it `eval`s the
+	 * factory. Present when source maps are enabled (the default). The runtime
+	 * appends it as a `//# sourceMappingURL=` comment so DevTools and stack traces
+	 * map generated positions back to the original `.ts`/`.tsx` source.
+	 */
+	map?: string;
 }
 
 /**

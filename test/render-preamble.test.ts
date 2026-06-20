@@ -144,6 +144,20 @@ test("preamble emits the Phase 5 React Fast Refresh wiring", () => {
 	expect(src).toContain("__refresh.performReactRefresh();");
 });
 
+test("preamble evaluates module factories with source-map comments", () => {
+	const src = generateIframePreamble([], CHANNEL);
+
+	// Factories are eval'd (not new Function) so source maps line up; the params
+	// are joined into the function-expression header.
+	expect(src).toContain('"module", "exports", "require", "import_meta_hot", "__react_refresh"');
+	expect(src).toContain('"(function(" + __params + "){');
+	expect(src).toContain("const factory = (0, eval)(__src);");
+	// A map (when present) is attached via sourceURL + sourceMappingURL comments.
+	expect(src).toContain("if (m.map)");
+	expect(src).toContain("//# sourceURL=sandlot://");
+	expect(src).toContain("//# sourceMappingURL=");
+});
+
 test("the legacy blob runtime is gone", () => {
 	const src = generateIframePreamble([], CHANNEL);
 
