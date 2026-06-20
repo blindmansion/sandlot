@@ -202,8 +202,19 @@ export function prepareBuild(args: {
 		logLevel: "silent",
 	};
 
+	// esbuild needs an output *path* to name and emit a separate CSS output file
+	// when a JS/TS module imports a `.css` (otherwise it refuses with "Cannot
+	// import ... into a JavaScript file without an output path configured"). This
+	// is a naming concern, not a write target — `write` is false, so nothing ever
+	// touches the fs; the bundled CSS comes back via `outputFiles` and is split
+	// out by `extractResult`. Honor an explicit `outfile` (e.g. for linked
+	// sourcemaps); otherwise default a synthetic `outdir` so CSS imports work out
+	// of the box. esbuild rejects `outfile` and `outdir` together, so it's one or
+	// the other.
 	if (options.outfile) {
 		buildOptions.outfile = options.outfile;
+	} else {
+		buildOptions.outdir = "/";
 	}
 
 	return { buildOptions, nativeTracker, resolveCache };

@@ -29,6 +29,7 @@
  * ```
  */
 
+import ts from "typescript";
 import { createSandHostFunctions } from "../../src/host-functions";
 import { generateHostFunctionDts } from "../../src/run/dts";
 import {
@@ -318,7 +319,15 @@ const sandGlobals = new Map<string, string>([
 const typecheckSession = createTypecheckSession({
 	fs,
 	mode: "render",
-	compilerOptions: { strict: true },
+	// Load the seeded project's tsconfig.json (lazily, at first check) so its
+	// `jsx`, `moduleResolution`, etc. apply; our options layer on top as
+	// embedder-enforced fallbacks (e.g. JSX defaults for tsconfig-less projects).
+	useProjectTsConfig: true,
+	compilerOptions: {
+		strict: true,
+		jsx: ts.JsxEmit.ReactJSX,
+		jsxImportSource: "react",
+	},
 	globalDeclarations: sandGlobals,
 });
 

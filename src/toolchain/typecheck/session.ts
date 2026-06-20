@@ -15,6 +15,7 @@ import {
 import type { TypecheckFileSystem } from "./fs";
 import { loadLibFilesFromCDN, RENDER_LIBS, RUN_LIBS } from "./lib-loader";
 import { getAllDiagnostics } from "./services";
+import { loadTsConfig } from "./tsconfig";
 import type {
 	FileChange,
 	TypecheckResult,
@@ -157,7 +158,7 @@ class Session implements TypecheckSession {
 		}
 
 		const built = await buildEnv(this.fs, this.libMap, {
-			compilerOptions: this.options.compilerOptions,
+			compilerOptions: await this.resolveCompilerOptions(),
 			workingDirectory: this.options.workingDirectory,
 			rootFiles: this.options.rootFiles,
 			globalDeclarations: this.options.globalDeclarations,
@@ -165,6 +166,25 @@ class Session implements TypecheckSession {
 		this.built = built;
 		this.rootSet = new Set(built.rootFiles);
 		return built;
+	}
+
+	/**
+	 * Resolve the effective compiler options. With {@link
+	 * TypecheckSessionOptions.useProjectTsConfig} set, the nearest project
+	 * `tsconfig.json` (loaded lazily from `fs`) is the base and the caller's
+	 * explicit options layer on top; otherwise the caller's options are used
+	 * verbatim. `buildEnv` still force-derives `lib`/`skipLibCheck` afterward.
+	 */
+	private async resolveCompilerOptions(): Promise<
+		TypecheckSessionOptions["compilerOptions"]
+	> {
+		if (!this.options.useProjectTsConfig) {
+			return this.options.compilerOptions;
+		}
+		const workingDir = this.options.workingDirectory || "/";
+		const loaded = await loadTsConfig({ cwd: workingDir, fs: this.fs }, workingDir);
+		if (!loaded) return this.options.compilerOptions;
+		return { ...loaded.compilerOptions, ...this.options.compilerOptions };
 	}
 }
 

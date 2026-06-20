@@ -13,8 +13,20 @@ import type { TypecheckFileSystem } from "./fs";
 export interface TypecheckSessionOptions {
 	/** The filesystem containing source files (the source of truth). */
 	fs: TypecheckFileSystem;
-	/** Compiler options for TypeScript (typically parsed from tsconfig.json). */
+	/**
+	 * Compiler options for TypeScript. When {@link useProjectTsConfig} is set,
+	 * these are layered *over* the project's parsed `tsconfig.json` (so they act
+	 * as embedder-enforced overrides/fallbacks); otherwise they are used as-is.
+	 */
 	compilerOptions: ts.CompilerOptions;
+	/**
+	 * Lazily load the nearest `tsconfig.json` from `fs` (searching up from
+	 * {@link workingDirectory}) at first check and merge its `compilerOptions` as
+	 * the base, with {@link compilerOptions} layered on top. Loading is deferred
+	 * to the first build so the file only needs to exist by the time the session
+	 * actually checks (e.g. after a fixture is seeded). Defaults to `false`.
+	 */
+	useProjectTsConfig?: boolean;
 	/**
 	 * Lib mode:
 	 * - "run": ES2020 only (no DOM types)
