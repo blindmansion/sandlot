@@ -85,6 +85,15 @@ test("preamble emits the module registry runtime and mount branch", () => {
 	expect(src).toContain("await __mount(msg.payload);");
 });
 
+test("preamble emits the css-update hot-swap branch", () => {
+	const src = generateIframePreamble([], CHANNEL);
+
+	// CSS hot-swap replaces the stable <style> block's text in place.
+	expect(src).toContain('if (msg.type === "css-update")');
+	expect(src).toContain('document.getElementById("__sandlot_css")');
+	expect(src).toContain("__cssEl.textContent = msg.css;");
+});
+
 test("the legacy blob runtime is gone", () => {
 	const src = generateIframePreamble([], CHANNEL);
 

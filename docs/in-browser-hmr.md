@@ -476,7 +476,14 @@ Add render-only message types to `src/run/protocol.ts`, alongside the existing
 export interface HmrPatchMessage {
   type: "hmr-patch";
   patches: Array<{ path: string; code: string; deps: Record<string, string> }>;
-  css?: string;            // present when CSS changed (§10)
+}
+
+// CSS is shipped separately (already implemented in Phase 2) — a CSS swap has
+// no patch graph and no reply to correlate, so it rides its own fire-and-forget
+// message rather than being folded into hmr-patch:
+export interface CssUpdateMessage {
+  type: "css-update";
+  css: string;             // full <style> text to swap in (§10)
 }
 
 export interface HmrResultMessage {
@@ -538,12 +545,23 @@ block baked into `srcdoc` at mount (§2.2). For hot-swap:
 
 1. Give the style element a stable id in `assembleHtml`
    (`<style id="__sandlot_css">`).
-2. On a CSS-only change, send `{ type: "hmr-patch", css }` (no `patches`).
+2. On a CSS-only change, send a dedicated `{ type: "css-update", css }` message.
 3. The runtime sets `document.getElementById("__sandlot_css").textContent = css`.
 
-Zero JS re-execution, zero state loss. This can ship in Phase 2 before the JS
-registry is fully wired, by special-casing CSS through the existing `evaluate`
-channel.
+Zero JS re-execution, zero state loss.
+
+> **Phase 2 status: ✅ Done.** Shipped as a dedicated `css-update` message
+> (`CssUpdateMessage` in `src/run/protocol.ts`) rather than overloading the
+> later `hmr-patch` or abusing the `evaluate` channel — a CSS swap has no reply
+> to correlate, so it is fire-and-forget. `RenderHandle.applyCss(css)`
+> (`src/render/iframe-render.ts`) sends it; the iframe runtime
+> (`src/render/iframe-preamble.ts`) replaces the stable `<style>` block's text
+> in place. The sandbox facade exposes `updateCss(css?)`
+> (`test/browser/sandbox.ts`): with an explicit string it swaps that CSS (and
+> remembers it as the override); with no argument it rebuilds the active entry
+> and swaps the freshly extracted `bundle.css`. Verified in-browser: editing the
+> CSS changed the computed style while a JS-stamped `window` value and DOM
+> `data-*` attribute survived unchanged — proving same-realm, no-reload swap.
 
 ---
 
@@ -587,7 +605,10 @@ correctness throughout.
    interactivity), the `react-app` fixture (JSX runtime, react-dom, hooks,
    context, events), host-function injection into modules, and a top-level-await
    import-less entry all mount correctly.
-2. **CSS hot-swap** (§10). High payoff, isolated.
+2. **CSS hot-swap** (§10). ✅ **Done.** A dedicated `css-update` message and
+   `RenderHandle.applyCss` swap the stable `<style>` block's text in place;
+   `sandlot.updateCss(css?)` drives it from the facade. Zero JS/DOM state loss,
+   verified in-browser.
 3. **JS patch + full-reload fallback** (§§6–9, minus accept logic): on any JS
    change, re-register changed modules and **re-run the entry** (cheap, loses JS
    state but not the document). This validates the patch pipeline end to end.

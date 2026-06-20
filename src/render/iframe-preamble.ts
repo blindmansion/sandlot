@@ -348,6 +348,12 @@ ${hostResponseHandler}
 		__handles.delete(msg.handleId);
 		return;
 	}
+	if (msg.type === "css-update") {
+		// Hot-swap CSS in place: replace the <style> text, no JS re-execution.
+		const __cssEl = document.getElementById("__sandlot_css");
+		if (__cssEl) __cssEl.textContent = msg.css;
+		return;
+	}
 	if (msg.type === "callback-invoke") {
 		const cb = __callbacks.get(msg.callbackId);
 		if (cb) cb.apply(null, msg.args);

@@ -131,6 +131,13 @@ export interface RenderHandle {
 	): Promise<EvaluateResult>;
 	/** Release a handle previously returned by {@link RenderHandle.evaluateHandle}. */
 	releaseHandle(token: EvalHandleToken): void;
+	/**
+	 * Hot-swap the render's CSS in place: replace the text of the mounted
+	 * `<style>` block without reloading the document or re-running any JS.
+	 * The live DOM and all module/component state are preserved — this is the
+	 * cheapest hot update. Fire-and-forget; a no-op after the render is closed.
+	 */
+	applyCss(css: string): void;
 	/** Tear down the render: close transport, resolve result. */
 	close(): void;
 }

@@ -266,14 +266,18 @@ export function createIframeRenderFn(
 			): Promise<EvaluateResult> {
 				return sendEval(code, evalArgs, true);
 			},
-			releaseHandle(token: EvalHandleToken) {
-				if (closed) return;
-				transport.send({
-					type: "handle-release",
-					handleId: token.__sandlot_handle__,
-				});
-			},
-			close() {
+		releaseHandle(token: EvalHandleToken) {
+			if (closed) return;
+			transport.send({
+				type: "handle-release",
+				handleId: token.__sandlot_handle__,
+			});
+		},
+		applyCss(css: string) {
+			if (closed) return;
+			transport.send({ type: "css-update", css });
+		},
+		close() {
 				closed = true;
 				transport.close();
 				complete();

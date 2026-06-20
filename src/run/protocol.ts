@@ -131,6 +131,20 @@ export interface HandleReleaseMessage {
 }
 
 /**
+ * Host → Iframe (render): hot-swap the document's CSS in place.
+ *
+ * The render document carries a single `<style id="__sandlot_css">` block; this
+ * message replaces its text content. No JS is re-executed and no module state is
+ * touched, so it is the cheapest possible hot update (zero state loss). Sent
+ * fire-and-forget — there is no reply to correlate.
+ */
+export interface CssUpdateMessage {
+	type: "css-update";
+	/** The full CSS text to swap into the live `<style>` block. */
+	css: string;
+}
+
+/**
  * Worker → Orchestrator: a host function call from the guest code.
  */
 export interface HostCallMessage {

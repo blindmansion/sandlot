@@ -59,6 +59,15 @@ const ESBUILD_WASM_URL =
 
 const NODE_MODULES_PATH = "/node_modules";
 
+// Bundle options the render path uses. Shared between `render()` and the CSS
+// hot-swap re-bundle in `updateCss()` so both reuse the same incremental
+// session (keyed by entry point + options).
+const RENDER_BUNDLE_OPTIONS: BundleOptions = {
+	format: "esm",
+	platform: "browser",
+	target: "es2022",
+};
+
 // ---------------------------------------------------------------------------
 // Serializable result shapes (what crosses the CDP boundary)
 // ---------------------------------------------------------------------------
@@ -106,6 +115,13 @@ interface EvalReport {
 	error?: { message: string; name?: string; stack?: string };
 }
 
+interface CssUpdateReport {
+	ok: boolean;
+	/** The CSS that was applied to the live render (present on success). */
+	css?: string;
+	error?: { message: string; name?: string };
+}
+
 interface SandlotFs {
 	read(path: string): Promise<string>;
 	write(path: string, content: string): Promise<void>;
@@ -132,6 +148,16 @@ interface SandlotApi {
 	install(specs?: string[]): Promise<InstallReport[]>;
 	run(entryPoint: string): Promise<ExecReport>;
 	render(entryPoint: string, options?: { css?: string }): Promise<ExecReport>;
+	/**
+	 * Hot-swap the CSS of the active render in place — no document reload, no JS
+	 * re-execution, zero DOM/state loss. Requires a prior `render(...)`.
+	 *
+	 * With no argument, re-bundles the active entry and swaps in the freshly
+	 * extracted CSS (the natural flow after editing an imported `.css` file). An
+	 * explicit `css` string overrides the bundle output and becomes the new
+	 * override for subsequent calls. Returns `{ ok, css? }`.
+	 */
+	updateCss(css?: string): Promise<CssUpdateReport>;
 	/**
 	 * Run JavaScript inside the currently-rendered iframe and return its value.
 	 *
@@ -272,6 +298,10 @@ const renderFn = createIframeRenderFn(renderFrameEl);
 // live rendered iframe. `createIframeRenderFn` tears down the previous render
 // on each new call, so this always points at the currently-visible view.
 let currentRenderHandle: RenderHandle | null = null;
+// The entry point and explicit CSS override of the active render, so a CSS
+// hot-swap (`updateCss`) can re-bundle the right project and honor an override.
+let currentRenderEntry: string | null = null;
+let currentRenderCssOverride: string | undefined;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -433,11 +463,7 @@ const sandlot: SandlotApi = {
 	},
 
 	async render(entryPoint, options) {
-		const session = await getBundleSession(entryPoint, {
-			format: "esm",
-			platform: "browser",
-			target: "es2022",
-		});
+		const session = await getBundleSession(entryPoint, RENDER_BUNDLE_OPTIONS);
 		const bundle = await session.rebuild();
 		const payload = await buildRenderPayload({
 			esbuild,
@@ -457,8 +483,37 @@ const sandlot: SandlotApi = {
 		// `createIframeRenderFn` tears down the previous render automatically on
 		// the next call.
 		currentRenderHandle = handle;
+		currentRenderEntry = entryPoint;
+		currentRenderCssOverride = options?.css;
 		const result = await handle.result;
 		return toExecReport(result);
+	},
+
+	async updateCss(css) {
+		if (!currentRenderHandle || !currentRenderEntry) {
+			return {
+				ok: false,
+				error: { message: "No active render. Call render(...) first." },
+			};
+		}
+		let next = css;
+		if (next === undefined) {
+			// Re-derive CSS from a rebuild of the active entry (incremental — the
+			// session is shared with render()). An explicit override from the
+			// original render() still wins, mirroring the mount-time precedence.
+			const session = await getBundleSession(
+				currentRenderEntry,
+				RENDER_BUNDLE_OPTIONS,
+			);
+			const bundle = await session.rebuild();
+			next = currentRenderCssOverride ?? bundle.css ?? "";
+		} else {
+			// An explicit css argument becomes the new override so later
+			// re-derivations keep honoring it.
+			currentRenderCssOverride = css;
+		}
+		currentRenderHandle.applyCss(next);
+		return { ok: true, css: next };
 	},
 
 	async evaluate(code, ...args) {
@@ -512,6 +567,8 @@ const sandlot: SandlotApi = {
 		if (currentRenderHandle) {
 			currentRenderHandle.close();
 			currentRenderHandle = null;
+			currentRenderEntry = null;
+			currentRenderCssOverride = undefined;
 			renderFrameEl.srcdoc = "";
 		}
 		return { removed: topLevel.length };
