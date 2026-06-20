@@ -202,7 +202,8 @@ export interface LogEntry {
  *
  * Carries the same shape on both sides of a cross-boundary runner, so the
  * host can reconstruct enough of the failure to report it. The `stack` is
- * only available in same-process (native) execution.
+ * populated by the native runner and the worker runner (where guest frames are
+ * named `sandlot://run.js`); it may be absent for other transports.
  */
 export interface RunError {
 	message: string;

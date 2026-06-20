@@ -107,7 +107,7 @@ interface LogLine {
 interface ExecReport {
 	ok: boolean;
 	log: LogLine[];
-	error?: { message: string; name?: string };
+	error?: { message: string; name?: string; stack?: string };
 }
 
 interface EvalReport {
@@ -397,13 +397,19 @@ function clearDirtyState(): void {
 function toExecReport(result: {
 	ok: boolean;
 	log: Array<{ level: string; text: string }>;
-	error?: { message: string; name?: string };
+	error?: { message: string; name?: string; stack?: string };
 }): ExecReport {
 	return {
 		ok: result.ok,
 		log: result.log.map((l) => ({ level: l.level, text: l.text })),
 		...(result.error
-			? { error: { message: result.error.message, name: result.error.name } }
+			? {
+					error: {
+						message: result.error.message,
+						name: result.error.name,
+						...(result.error.stack ? { stack: result.error.stack } : {}),
+					},
+				}
 			: {}),
 	};
 }

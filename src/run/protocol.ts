@@ -250,8 +250,12 @@ export interface DoneMessage {
 	type: "done";
 	/** True if the guest code ran to completion without throwing. */
 	ok: boolean;
-	/** The error that terminated execution, present only when `ok` is false. */
-	error?: { message: string; name?: string };
+	/**
+	 * The error that terminated execution, present only when `ok` is false. The
+	 * `stack` carries the guest's raw trace (generated positions, named against
+	 * `sandlot://run.js` via the guest preamble's `//# sourceURL`).
+	 */
+	error?: { message: string; name?: string; stack?: string };
 }
 
 /**

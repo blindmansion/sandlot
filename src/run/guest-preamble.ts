@@ -11,8 +11,9 @@
  *
  * All host function stubs and namespace objects are collected into a
  * `__globals` registry. The exec handler passes these as named parameters
- * to `new Function()` wrapped in `(async () => { ... })()`, so bundled
- * code can use top-level `await` and reference host globals directly.
+ * to an `async function` expression evaluated via (indirect) `eval` with a
+ * `//# sourceURL`, so bundled code can use top-level `await`, reference host
+ * globals directly, and surface a named frame in stack traces / DevTools.
  *
  * The generated code is plain JavaScript (no TypeScript) suitable for
  * execution inside a Worker via `blob:` URL.
@@ -246,10 +247,15 @@ async function __execute(code) {
 		paramNames.push(name);
 		paramValues.push(value);
 	}
-	const __fn = new Function(
-		...paramNames,
-		"return (async () => {\\n" + __stripExports(code) + "\\n})();"
-	);
+	// Evaluate as a named function expression via (indirect) eval rather than
+	// new Function, appending //# sourceURL so the worker frame is attributed to
+	// sandlot://run.js in DevTools and stack traces instead of an anonymous blob.
+	// The bundle's own inline source-map comment (if any) is dropped: under this
+	// wrapper its line mappings are offset and would point at the wrong source.
+	// Aligned worker source maps are a later phase.
+	const __body = __stripExports(code).replace(/\\n?\\/\\/# sourceMappingURL=[^\\n]*/g, "");
+	const __src = "(async function (" + paramNames.join(",") + ") {\\n" + __body + "\\n})\\n//# sourceURL=sandlot://run.js";
+	const __fn = (0, eval)(__src);
 	await __fn(...paramValues);
 }
 
@@ -273,6 +279,7 @@ ${hostResponseHandler}
 			error = {
 				message: err instanceof Error ? err.message : String(err),
 				name: err instanceof Error ? err.name : "Error",
+				stack: err instanceof Error ? err.stack : undefined,
 			};
 		}
 		postMessage({ type: "done", ok: !error, error: error });

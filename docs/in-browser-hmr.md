@@ -740,16 +740,37 @@ correctness throughout.
    were wired into the per-module render path only. The other two execution paths
    are unchanged and have no working maps:
    - **Worker run pathway** (`createIframeWorkerRunFn` → `src/run/guest-preamble.ts`).
-     `__execute` runs a *single full bundle* via `new Function` + an
-     `(async () => { … })()` wrapper + `stripExports`. Even though the bundler
-     defaults to `sourcemap: "inline"`, that map is both misaligned (the wrapper
-     and `new Function` header shift lines) and unnamed (no `sourceURL`), so a
-     `run()` error stack points at an anonymous `blob:`/eval frame. Fixable with
-     the same `eval` + `sourceURL` + offset trick, but it's a distinct change: the
-     map arrives baked into the bundle string (from esbuild `build`, not a
-     `transform` result), so it must be extracted/re-encoded rather than offset
-     from a clean `out.map`. Best paired with the `RunError` `{file,line,column}`
-     follow-on, since headless `run()` is where structured locations pay off.
+     - **Phase A — named frames + stack capture. ✅ Done (and the chosen stopping
+       point for now).** `__execute` now runs the bundle via indirect `eval` of an
+       `async function` expression with a `//# sourceURL=sandlot://run.js`, and the
+       guest reports `error.stack` (added to `DoneMessage.error`; surfaced on
+       `RunError.stack`). The bundle's own inline source-map comment is dropped
+       because it would be misaligned under the wrapper. So a `run()` error now
+       frames against `sandlot://run.js` instead of an anonymous `blob:`/eval
+       frame — verified in-browser.
+
+       **Caveat for consumers (e.g. an agent debugging its `run()` scripts):** the
+       stack's line/column are **compiled positions in the single bundle**, and
+       every source file collapses to one `sandlot://run.js` — they are *not*
+       original source positions. Rely on `error.message` + `error.name` and the
+       preserved **function names** in the stack (the bundle is unminified, so
+       `at boom (…)` survives) to localize; do **not** treat the numbers as source
+       lines. This is the deliberate limitation of stopping at A.
+     - **Phase B — aligned maps for DevTools (pending, likely unnecessary).** Give
+       the *worker* a correct inline map (bundle `run()` with `sourcemap:
+       "external"`, offset for the wrapper line via the shared render helper,
+       thread to the worker through the `spawn` message). Note its payoff is
+       **DevTools-only** — it does not change the raw `error.stack` string — so it
+       is the wrong target for a programmatic consumer like an agent.
+     - **Phase C — structured `RunError.{file,line,column}` (pending; the real
+       follow-on *if* A proves insufficient).** Remap the generated stack to
+       original source **host-side** (where an agent already is), so it does *not*
+       require Phase B. Needs the bundle map on the host (`sourcemap: "external"`
+       → `BundleResult.map`), a source-map consumer (new dep or a small VLQ
+       decoder), V8 stack-frame parsing, and the same fixed `+1` wrapper-line
+       offset. **Trigger to build this:** agents misreading the compiled line
+       numbers, or failing to localize in multi-file projects / anonymous frames
+       where no useful function name survives.
    - **Render `evaluate()` snippets** (`__evaluate`, `src/render/iframe-preamble.ts`)
      still use `new Function` + `stripExports` with no map. Intentionally skipped:
      these are ad-hoc host-supplied snippets, not project source files, so there
