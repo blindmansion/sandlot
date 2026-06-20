@@ -197,7 +197,7 @@ function makeRuntime(
 		const module = instantiate(payload.entry);
 		const rec = registry.get(payload.entry);
 		if (rec?.ret && typeof (rec.ret as { then?: unknown }).then === "function") {
-			await rec.ret;
+			rec.ret;
 		}
 		return module.exports;
 	}
@@ -255,7 +255,7 @@ function makeRuntime(
 				rec?.ret &&
 				typeof (rec.ret as { then?: unknown }).then === "function"
 			) {
-				await rec.ret;
+				rec.ret;
 			}
 			const h = hot.get(path);
 			if (h?.acceptCb) {
@@ -420,10 +420,10 @@ test("accept boundary re-runs only its subgraph and preserves sibling state", as
 		await ws.fs.writeFile(
 			"/src/index.ts",
 			'import { store } from "./store";\n' +
-				"store.value += 1;\n" +
-				"import.meta.hot.accept();\n" +
-				'export const label = "v1";\n' +
-				"export const total = () => store.value;\n",
+			"store.value += 1;\n" +
+			"import.meta.hot.accept();\n" +
+			'export const label = "v1";\n' +
+			"export const total = () => store.value;\n",
 		);
 
 		const payload = await bundleAndBuildPayload(ws.fs, "/src/index.ts");
@@ -440,10 +440,10 @@ test("accept boundary re-runs only its subgraph and preserves sibling state", as
 		await ws.fs.writeFile(
 			"/src/index.ts",
 			'import { store } from "./store";\n' +
-				"store.value += 1;\n" +
-				"import.meta.hot.accept();\n" +
-				'export const label = "v2";\n' +
-				"export const total = () => store.value;\n",
+			"store.value += 1;\n" +
+			"import.meta.hot.accept();\n" +
+			'export const label = "v2";\n' +
+			"export const total = () => store.value;\n",
 		);
 		const bundle = await bundleWithEsbuild(esbuild, {
 			fs: ws.fs,
@@ -590,7 +590,7 @@ test("react fast refresh: component module registers + refreshes under a stable 
 		await ws.fs.writeFile(
 			"/src/index.ts",
 			'import { Widget } from "./widget";\n' +
-				"export const view = () => Widget();\n",
+			"export const view = () => Widget();\n",
 		);
 
 		const payload = await bundleAndBuildPayload(ws.fs, "/src/index.ts");
@@ -672,8 +672,8 @@ test("import-less entry compiles async and supports top-level await", async () =
 		await ws.fs.writeFile(
 			"/src/main.ts",
 			"const x = await Promise.resolve(42);\n" +
-				"globalThis.__sandlot_tla__ = x;\n" +
-				"export {};\n",
+			"globalThis.__sandlot_tla__ = x;\n" +
+			"export {};\n",
 		);
 
 		const payload = await bundleAndBuildPayload(ws.fs, "/src/main.ts");
