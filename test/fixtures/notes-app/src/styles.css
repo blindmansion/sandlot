@@ -1,0 +1,261 @@
+:root {
+	--bg: #0f1115;
+	--panel: #181b22;
+	--panel-2: #1f232c;
+	--border: #2a2f3a;
+	--text: #e6e9ef;
+	--muted: #8b93a3;
+	--accent: #6d8bff;
+	--accent-soft: rgba(109, 139, 255, 0.16);
+	--danger: #ff6b6b;
+}
+
+* {
+	box-sizing: border-box;
+}
+
+body {
+	margin: 0;
+	background: var(--bg);
+	color: var(--text);
+	font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+.app {
+	max-width: 760px;
+	margin: 0 auto;
+	padding: 28px 20px 48px;
+}
+
+.app__header {
+	margin-bottom: 22px;
+}
+
+.app__header h1 {
+	margin: 0;
+	font-size: 26px;
+	letter-spacing: -0.02em;
+}
+
+.app__subtitle {
+	margin: 6px 0 0;
+	color: var(--muted);
+	font-size: 14px;
+}
+
+/* Calendar */
+.calendar {
+	background: var(--panel);
+	border: 1px solid var(--border);
+	border-radius: 14px;
+	padding: 16px;
+	margin-bottom: 20px;
+}
+
+.calendar__bar {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	margin-bottom: 14px;
+}
+
+.calendar__range {
+	font-weight: 600;
+	font-size: 15px;
+}
+
+.calendar__nav {
+	width: 30px;
+	height: 30px;
+	border-radius: 8px;
+	border: 1px solid var(--border);
+	background: var(--panel-2);
+	color: var(--text);
+	font-size: 17px;
+	line-height: 1;
+	cursor: pointer;
+}
+
+.calendar__nav:hover {
+	border-color: var(--accent);
+}
+
+.calendar__today {
+	margin-left: auto;
+	padding: 7px 14px;
+	border-radius: 8px;
+	border: 1px solid var(--border);
+	background: var(--panel-2);
+	color: var(--text);
+	font-size: 13px;
+	cursor: pointer;
+}
+
+.calendar__today:hover {
+	border-color: var(--accent);
+}
+
+.calendar__grid {
+	display: grid;
+	grid-template-columns: repeat(7, 1fr);
+	gap: 8px;
+}
+
+.day-cell {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 6px;
+	padding: 12px 4px 14px;
+	border-radius: 10px;
+	border: 1px solid var(--border);
+	background: var(--panel-2);
+	color: var(--text);
+	cursor: pointer;
+	transition: border-color 0.12s, background 0.12s, transform 0.08s;
+}
+
+.day-cell:hover {
+	border-color: var(--accent);
+	transform: translateY(-1px);
+}
+
+.day-cell__label {
+	font-size: 11px;
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+	color: var(--muted);
+}
+
+.day-cell__num {
+	font-size: 18px;
+	font-weight: 600;
+}
+
+.day-cell--today .day-cell__num {
+	color: var(--accent);
+}
+
+.day-cell--selected {
+	border-color: var(--accent);
+	background: var(--accent-soft);
+}
+
+.day-cell__badge {
+	position: absolute;
+	top: 6px;
+	right: 6px;
+	min-width: 17px;
+	height: 17px;
+	padding: 0 4px;
+	border-radius: 9px;
+	background: var(--accent);
+	color: #0b0d12;
+	font-size: 11px;
+	font-weight: 700;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+
+/* Day panel */
+.day-panel {
+	background: var(--panel);
+	border: 1px solid var(--border);
+	border-radius: 14px;
+	padding: 18px;
+}
+
+.editor {
+	margin-bottom: 16px;
+}
+
+.editor__day {
+	display: block;
+	font-size: 13px;
+	color: var(--muted);
+	margin-bottom: 8px;
+}
+
+.editor__row {
+	display: flex;
+	gap: 8px;
+}
+
+.editor__input {
+	flex: 1;
+	padding: 10px 12px;
+	border-radius: 9px;
+	border: 1px solid var(--border);
+	background: var(--bg);
+	color: var(--text);
+	font-size: 14px;
+}
+
+.editor__input:focus {
+	outline: none;
+	border-color: var(--accent);
+}
+
+.editor__add {
+	padding: 10px 18px;
+	border-radius: 9px;
+	border: none;
+	background: var(--accent);
+	color: #0b0d12;
+	font-weight: 600;
+	font-size: 14px;
+	cursor: pointer;
+}
+
+.editor__add:hover {
+	filter: brightness(1.08);
+}
+
+.notes {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.note {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	padding: 11px 14px;
+	border-radius: 10px;
+	background: var(--panel-2);
+	border: 1px solid var(--border);
+}
+
+.note__text {
+	flex: 1;
+	font-size: 14px;
+}
+
+.note__delete {
+	width: 24px;
+	height: 24px;
+	border-radius: 6px;
+	border: none;
+	background: transparent;
+	color: var(--muted);
+	font-size: 18px;
+	line-height: 1;
+	cursor: pointer;
+}
+
+.note__delete:hover {
+	color: var(--danger);
+}
+
+.notes__empty {
+	margin: 0;
+	color: var(--muted);
+	font-size: 14px;
+	font-style: italic;
+}
