@@ -6,20 +6,8 @@
 		<title>sandlot — agent sandbox</title>
 		<link rel="stylesheet" href="./styles.css" />
 	</head>
-	<body>
-		<main>
-			<h1>sandlot agent sandbox</h1>
-			<p class="subtitle">
-				The sandlot toolchain (fs, typecheck, bundle, install, run, render) is
-				exposed as <code>window.sandlot</code>. Drive it from the host with
-				<code>agent-browser eval</code>.
-			</p>
-			<p class="demo-status" id="status">Initializing…</p>
-			<section id="demo">
-				<h2>Render output</h2>
-				<iframe id="render-frame" title="sandlot render output"></iframe>
-			</section>
-		</main>
+	<body class="sandbox">
+		<iframe id="render-frame" title="sandlot render output"></iframe>
 		<script type="module" src="./sandbox.ts"></script>
 	</body>
 </html>

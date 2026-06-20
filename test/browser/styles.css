@@ -115,6 +115,23 @@ li.skip .detail {
 	background: Canvas;
 }
 
+/* Agent sandbox: the render-output iframe fills the whole viewport. */
+body.sandbox {
+	margin: 0;
+	padding: 0;
+	display: block;
+	height: 100vh;
+	overflow: hidden;
+}
+
+body.sandbox #render-frame {
+	display: block;
+	width: 100vw;
+	height: 100vh;
+	border: 0;
+	border-radius: 0;
+}
+
 li.section {
 	list-style: none;
 	margin: 1rem 0 0.25rem -1.25rem;
