@@ -13,7 +13,7 @@
  */
 
 import { file, Glob } from "bun";
-import { readdir } from "node:fs/promises";
+import { readdir, rm } from "node:fs/promises";
 import { dirname, join, sep } from "node:path";
 
 const here = dirname(new URL(import.meta.url).pathname);
@@ -49,6 +49,11 @@ async function readFixture(name: string): Promise<Record<string, string>> {
 	}
 	return files;
 }
+
+// Bun emits content-hashed chunk names and never prunes the outdir, so stale
+// chunks (each carrying a full ~10MB TypeScript compiler copy) pile up across
+// rebuilds. Wipe the dir first so `dist` only ever holds the current build.
+await rm(outdir, { recursive: true, force: true });
 
 const built = await Bun.build({
 	entrypoints: [
