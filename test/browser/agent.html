@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>sandlot — coding agent</title>
+		<link rel="stylesheet" href="./agent.css" />
+	</head>
+	<body>
+		<div class="app">
+			<aside class="chat">
+				<header class="chat-header">
+					<div class="brand">
+						<span class="dot"></span>
+						<div>
+							<h1>sandlot agent</h1>
+							<p class="tagline">a coding agent in an in-browser workspace</p>
+						</div>
+					</div>
+					<div class="controls">
+						<select id="model" title="Model"></select>
+						<span id="status" class="status">booting…</span>
+					</div>
+				</header>
+
+				<div id="transcript" class="transcript" aria-live="polite"></div>
+
+				<form id="composer" class="composer">
+					<textarea
+						id="input"
+						rows="1"
+						placeholder="Ask the agent to build or change something… (⌘/Ctrl+Enter to send)"
+						autocomplete="off"
+					></textarea>
+					<div class="composer-actions">
+						<button type="button" id="stop" class="btn ghost" disabled>Stop</button>
+						<button type="submit" id="send" class="btn primary">Send</button>
+					</div>
+				</form>
+			</aside>
+
+			<main class="preview">
+				<div class="preview-bar">
+					<span class="preview-label">preview</span>
+					<span id="preview-path" class="preview-path"></span>
+				</div>
+				<iframe id="render-frame" title="sandlot render output"></iframe>
+			</main>
+		</div>
+		<script type="module" src="./agent/app.ts"></script>
+	</body>
+</html>

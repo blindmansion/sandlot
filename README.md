@@ -1,5 +1,36 @@
 # sandlot-4
 
+## Coding agent demo (pi-agent-core + OpenRouter)
+
+A browser-native coding agent wired to the sandlot toolchain. The agent edits an
+in-memory TypeScript workspace, typechecks/installs/builds it, and renders a live
+preview — all in the page. The agent loop, tool-calling, streaming, and abort
+handling come from [`@earendil-works/pi-agent-core`](https://www.npmjs.com/package/@earendil-works/pi-agent-core);
+model access is [`@earendil-works/pi-ai`](https://www.npmjs.com/package/@earendil-works/pi-ai)'s
+`streamSimple` against OpenRouter.
+
+```bash
+echo "OPENROUTER_API_KEY=sk-or-..." > .env   # the dev server reads this
+bun run agent                                # serve at http://localhost:4321/agent.html
+```
+
+Open `http://localhost:4321/agent.html` and ask it to build or change the app.
+
+How it's wired (`test/browser/agent/`):
+
+- `sandbox-core.ts` — the toolchain (VFS + typecheck/bundle/install/run/render).
+- `browser-env.ts` — a pi `ExecutionEnv` (FileSystem + Shell) over that core; every
+  method returns a `Result` and never throws.
+- `bash.ts` — a deliberately tiny shell: pure string parsing, **no shell features**
+  (no pipes/redirection/globs/chaining). Builtins (`ls`, `cat`, `mkdir`, `rm`, …)
+  plus toolchain commands (`typecheck`, `install`, `bundle`, `run`, `render`).
+- `tools.ts` — model-visible `AgentTool`s: `read`, `write`, `edit`, `ls`, `bash`.
+- `app.ts` — assembles the `Agent`, the OpenRouter `streamFn`, and the chat UI.
+
+The OpenRouter key stays server-side: the browser points the model `baseUrl` at the
+dev server's `/api/openrouter` proxy (see `serve.ts`), which injects the real key
+from `.env`. The browser only ever sends a placeholder key.
+
 ## Driving the sandbox with agent-browser
 
 The sandlot toolchain (fs, typecheck, bundle, install, run, render) can be

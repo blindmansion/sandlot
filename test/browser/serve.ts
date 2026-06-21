@@ -51,7 +51,11 @@ async function readFixture(name: string): Promise<Record<string, string>> {
 }
 
 const built = await Bun.build({
-	entrypoints: [join(here, "index.html"), join(here, "sandbox.html")],
+	entrypoints: [
+		join(here, "index.html"),
+		join(here, "sandbox.html"),
+		join(here, "agent.html"),
+	],
 	outdir,
 	sourcemap: "none",
 });
@@ -61,11 +65,57 @@ if (!built.success) {
 	throw new Error("build failed");
 }
 
+const OPENROUTER_PREFIX = "/api/openrouter/";
+const OPENROUTER_UPSTREAM = "https://openrouter.ai/api/v1/";
+
 const server = Bun.serve({
 	// Pinned (env-overridable) so automation can reliably connect.
 	port: Number(process.env.PORT ?? 4321),
+	// Provider requests can stream for a long while; don't cut them off.
+	idleTimeout: 0,
 	async fetch(req) {
 		const url = new URL(req.url);
+
+		// Report whether the OpenRouter key is configured, so the agent page can
+		// show a helpful hint instead of failing cryptically on first request.
+		if (url.pathname === "/api/config") {
+			return Response.json({ hasKey: Boolean(process.env.OPENROUTER_API_KEY) });
+		}
+
+		// Proxy OpenRouter so the API key stays server-side. The browser points
+		// the model's baseUrl at this prefix and sends a placeholder key; we
+		// rewrite the Authorization header with the real key from the env.
+		if (url.pathname.startsWith(OPENROUTER_PREFIX)) {
+			const key = process.env.OPENROUTER_API_KEY;
+			if (!key) {
+				return Response.json(
+					{ error: { message: "OPENROUTER_API_KEY is not set on the dev server (.env)." } },
+					{ status: 500 },
+				);
+			}
+			const upstream = `${OPENROUTER_UPSTREAM}${url.pathname.slice(OPENROUTER_PREFIX.length)}${url.search}`;
+			const headers = new Headers(req.headers);
+			headers.set("authorization", `Bearer ${key}`);
+			headers.delete("host");
+			const body =
+				req.method === "GET" || req.method === "HEAD"
+					? undefined
+					: await req.arrayBuffer();
+			const upstreamRes = await fetch(upstream, {
+				method: req.method,
+				headers,
+				body,
+			});
+			// Re-stream the (possibly SSE) body; drop hop-by-hop/encoding headers
+			// that no longer apply once Bun has decoded the response.
+			const outHeaders = new Headers(upstreamRes.headers);
+			outHeaders.delete("content-encoding");
+			outHeaders.delete("content-length");
+			return new Response(upstreamRes.body, {
+				status: upstreamRes.status,
+				headers: outHeaders,
+			});
+		}
 
 		// List available fixtures.
 		if (url.pathname === "/fixtures") {
@@ -103,3 +153,9 @@ const server = Bun.serve({
 
 console.log(`sandlot smoke test running at ${server.url}`);
 console.log(`sandlot agent sandbox running at ${server.url}sandbox.html`);
+console.log(`sandlot coding agent running at ${server.url}agent.html`);
+if (!process.env.OPENROUTER_API_KEY) {
+	console.warn(
+		"⚠ OPENROUTER_API_KEY is not set — add it to .env for the coding agent (agent.html).",
+	);
+}
