@@ -1,4 +1,4 @@
-# sandlot-4
+# sandlot
 
 ## Coding agent demo (pi-agent-core + OpenRouter)
 
